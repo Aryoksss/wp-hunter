@@ -1,0 +1,75 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+pip-wheel-metadata/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual Environment
+venv/
+ENV/
+env/
+.venv
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# WordPress Plugin Downloads
+wp_plugins_*/
+downloaded_*.json
+plugin_list*.csv
+plugin_slugs*.txt
+*.zip
+
+# Logs
+bulk_scan_log.txt
+bulk_scan_summary.csv
+vuln_report.txt
+deleted_plugins.txt
+vuln_plugins.txt
+
+# Temporary
+extracted/
+taint-results/
+temp_*/
+
+# Project-specific (keep if needed for reference)
+# SECURITY_RESEARCH_CONTEXT.md
+# wordpress-7.0.zip
+# wp-taint-scan/
+
+# Kiro IDE
+.kiro/
+
+# Large folders
+AAA/
+BBPress/
+wp70/
+wp-taint-scan/
