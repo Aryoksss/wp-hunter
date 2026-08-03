@@ -44,6 +44,11 @@ desktop.ini
 # WordPress Plugin Downloads
 wp_plugins_*/
 downloaded_*.json
+plugins_*.json
+plugins_*.csv
+patchstack_targets.json
+patchstack_targets.csv
+plugin_info.json
 plugin_list*.csv
 plugin_slugs*.txt
 *.zip
@@ -54,16 +59,14 @@ bulk_scan_summary.csv
 vuln_report.txt
 deleted_plugins.txt
 vuln_plugins.txt
+triage_results.json
+
+# Hunter ownership marker (created in output roots, including custom roots)
+.wp-hunter-root
 
 # Temporary
 extracted/
-taint-results/
 temp_*/
-
-# Project-specific (keep if needed for reference)
-# SECURITY_RESEARCH_CONTEXT.md
-# wordpress-7.0.zip
-# wp-taint-scan/
 
 # Kiro IDE
 .kiro/
@@ -72,4 +75,3 @@ temp_*/
 AAA/
 BBPress/
 wp70/
-wp-taint-scan/
