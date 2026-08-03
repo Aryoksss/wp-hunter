@@ -1,0 +1,294 @@
+rules:
+  - id: wordpress.ajax-nopriv-entrypoint
+    languages: [php]
+    message: WordPress AJAX action is reachable without authentication; review its callback and input handling.
+    severity: WARNING
+    metadata:
+      triage:
+        category: ajax_entrypoint
+        access: unauthenticated
+        confidence: medium
+    pattern-regex: 'wp_ajax_nopriv_[A-Za-z0-9_-]+'
+
+  - id: wordpress.ajax-authenticated-entrypoint
+    languages: [php]
+    message: WordPress AJAX action entrypoint found; review nonce and capability checks.
+    severity: WARNING
+    metadata:
+      triage:
+        category: ajax_entrypoint
+        access: unknown
+        confidence: low
+    pattern-regex: 'wp_ajax_(?!nopriv_)[A-Za-z0-9_-]+'
+
+  - id: wordpress.admin-post-nopriv-entrypoint
+    languages: [php]
+    message: WordPress admin-post action is reachable without authentication.
+    severity: WARNING
+    metadata:
+      triage:
+        category: http_entrypoint
+        access: unauthenticated
+        confidence: medium
+    pattern-regex: 'admin_post_nopriv_[A-Za-z0-9_-]+'
+
+  - id: wordpress.rest-route
+    languages: [php]
+    message: WordPress REST route registration found; review permission_callback and input validation.
+    severity: WARNING
+    metadata:
+      triage:
+        category: rest_entrypoint
+        access: unknown
+        confidence: low
+    pattern: register_rest_route($NAMESPACE, $ROUTE, $ARGS)
+
+  - id: wordpress.rest-permissive-route
+    languages: [php]
+    message: REST route appears to use a permissive permission_callback.
+    severity: WARNING
+    metadata:
+      triage:
+        category: rest_entrypoint
+        access: unauthenticated
+        confidence: high
+    pattern-regex: "(?i)permission_callback\\s*=>\\s*['\"]__return_true['\"]"
+
+  - id: wordpress.input-superglobal
+    languages: [php]
+    message: Request-controlled WordPress/PHP input reaches plugin code; trace validation and authorization.
+    severity: WARNING
+    metadata:
+      triage:
+        category: input_source
+        access: unknown
+        confidence: medium
+    patterns:
+      - pattern-either:
+          - pattern: $_GET[$KEY]
+          - pattern: $_POST[$KEY]
+          - pattern: $_REQUEST[$KEY]
+          - pattern: $_FILES[$KEY]
+          - pattern: $_COOKIE[$KEY]
+          - pattern: file_get_contents("php://input")
+          - pattern: file_get_contents('php://input')
+
+  - id: wordpress.file-read
+    languages: [php]
+    message: File read operation found; review whether the path can be influenced by a request.
+    severity: WARNING
+    metadata:
+      triage:
+        category: file_read
+        access: unknown
+        confidence: medium
+    patterns:
+      - pattern-either:
+          - pattern: file_get_contents($PATH)
+          - pattern: readfile($PATH)
+          - pattern: fpassthru($HANDLE)
+          - pattern: fopen($PATH, $MODE)
+
+  - id: wordpress.file-write
+    languages: [php]
+    message: File write or upload operation found; review path validation and authorization.
+    severity: WARNING
+    metadata:
+      triage:
+        category: file_write
+        access: unknown
+        confidence: medium
+    patterns:
+      - pattern-either:
+          - pattern: file_put_contents($PATH, $DATA)
+          - pattern: fwrite($HANDLE, $DATA)
+          - pattern: fputs($HANDLE, $DATA)
+          - pattern: move_uploaded_file($SOURCE, $DESTINATION)
+          - pattern: copy($SOURCE, $DESTINATION)
+          - pattern: rename($SOURCE, $DESTINATION)
+
+  - id: wordpress.file-delete
+    languages: [php]
+    message: File deletion operation found; review path validation and authorization.
+    severity: WARNING
+    metadata:
+      triage:
+        category: file_delete
+        access: unknown
+        confidence: medium
+    patterns:
+      - pattern-either:
+          - pattern: unlink($PATH)
+          - pattern: rmdir($PATH)
+          - pattern: wp_delete_file($PATH)
+
+  - id: wordpress.sql-wpdb
+    languages: [php]
+    message: Database operation through $wpdb found; review query construction and capability checks.
+    severity: WARNING
+    metadata:
+      triage:
+        category: sql_query
+        access: unknown
+        confidence: medium
+    patterns:
+      - pattern-either:
+          - pattern: $wpdb->query($QUERY)
+          - pattern: $wpdb->get_results($QUERY)
+          - pattern: $wpdb->get_row($QUERY)
+          - pattern: $wpdb->get_var($QUERY)
+          - pattern: $wpdb->get_col($QUERY)
+
+  - id: wordpress.option-update
+    languages: [php]
+    message: Persistent WordPress option or metadata update found; review authorization and user-controlled values.
+    severity: WARNING
+    metadata:
+      triage:
+        category: option_or_meta_update
+        access: unknown
+        confidence: medium
+    patterns:
+      - pattern-either:
+          - pattern: update_option($OPTION, $VALUE)
+          - pattern: update_site_option($OPTION, $VALUE)
+          - pattern: delete_option($OPTION)
+          - pattern: update_user_meta($USER, $META_KEY, $VALUE)
+          - pattern: update_post_meta($POST, $META_KEY, $VALUE)
+
+  - id: wordpress.user-update
+    languages: [php]
+    message: User or role mutation found; review privilege boundaries and authorization.
+    severity: WARNING
+    metadata:
+      triage:
+        category: privilege_escalation
+        access: unknown
+        confidence: medium
+    patterns:
+      - pattern-either:
+          - pattern: wp_update_user($USER)
+          - pattern: wp_insert_user($USER)
+          - pattern: $USER_OBJECT->set_role($ROLE)
+          - pattern: add_role($ROLE, $DISPLAY_NAME, $CAPABILITIES)
+          - pattern: grant_super_admin($USER)
+          - pattern: wp_set_auth_cookie($USER_ID)
+
+  - id: wordpress.capability-check
+    languages: [php]
+    message: Capability check found; compare it with the operation's required privilege.
+    severity: WARNING
+    metadata:
+      triage:
+        category: capability_check
+        access: capability_checked
+        confidence: low
+    pattern: current_user_can($CAPABILITY)
+
+  - id: wordpress.php-dangerous-execution
+    languages: [php]
+    message: Dangerous PHP execution or dynamic loading operation found; review all data reaching it.
+    severity: WARNING
+    metadata:
+      triage:
+        category: rce_or_dynamic_load
+        access: unknown
+        confidence: high
+    patterns:
+      - pattern-either:
+          - pattern: eval($CODE)
+          - pattern: system($COMMAND)
+          - pattern: exec($COMMAND)
+          - pattern: shell_exec($COMMAND)
+          - pattern: passthru($COMMAND)
+          - pattern: popen($COMMAND, $MODE)
+          - pattern: include $PATH
+          - pattern: include_once $PATH
+          - pattern: require $PATH
+          - pattern: require_once $PATH
+          - pattern: unserialize($VALUE)
+
+  - id: wordpress.php-html-output
+    languages: [php]
+    message: Request-controlled value is emitted directly; review escaping before HTML or attribute output.
+    severity: WARNING
+    metadata:
+      triage:
+        category: xss_output
+        access: unknown
+        confidence: medium
+    patterns:
+      - pattern-either:
+          - pattern: echo $_GET[$KEY]
+          - pattern: echo $_POST[$KEY]
+          - pattern: echo $_REQUEST[$KEY]
+          - pattern: echo $_COOKIE[$KEY]
+          - pattern: print $_GET[$KEY]
+          - pattern: print $_POST[$KEY]
+          - pattern: printf($FORMAT, $_GET[$KEY])
+
+  - id: wordpress.js-input-source
+    languages: [javascript]
+    message: Browser-controlled value found; trace whether it reaches a DOM, script, or redirect sink.
+    severity: WARNING
+    metadata:
+      triage:
+        category: input_source
+        access: unknown
+        confidence: low
+    patterns:
+      - pattern-either:
+          - pattern: window.location.search
+          - pattern: window.location.hash
+          - pattern: document.cookie
+          - pattern: new URLSearchParams($QUERY)
+
+  - id: wordpress.js-dom-xss
+    languages: [javascript]
+    message: Potential DOM XSS sink found; review whether the value is attacker controlled.
+    severity: WARNING
+    metadata:
+      triage:
+        category: xss_dom
+        access: unknown
+        confidence: medium
+    patterns:
+      - pattern-either:
+          - pattern: $ELEMENT.innerHTML = $VALUE
+          - pattern: $ELEMENT.outerHTML = $VALUE
+          - pattern: $ELEMENT.html($VALUE)
+          - pattern: document.write($VALUE)
+          - pattern: document.writeln($VALUE)
+
+  - id: wordpress.js-dangerous-eval
+    languages: [javascript]
+    message: Dynamic JavaScript execution found; review all data reaching the sink.
+    severity: WARNING
+    metadata:
+      triage:
+        category: javascript_execution
+        access: unknown
+        confidence: high
+    patterns:
+      - pattern-either:
+          - pattern: eval($VALUE)
+          - pattern: new Function($VALUE)
+          - pattern: setTimeout($VALUE, $DELAY)
+          - pattern: setInterval($VALUE, $DELAY)
+
+  - id: wordpress.js-input-redirect
+    languages: [javascript]
+    message: Redirect assignment found; review whether the destination is controlled by URL or user input.
+    severity: WARNING
+    metadata:
+      triage:
+        category: open_redirect
+        access: unknown
+        confidence: medium
+    patterns:
+      - pattern-either:
+          - pattern: window.location = $VALUE
+          - pattern: window.location.href = $VALUE
+          - pattern: window.location.replace($VALUE)
+          - pattern: location.href = $VALUE
+          - pattern: location.assign($VALUE)

@@ -37,6 +37,7 @@ python wp_plugin_hunter.py --patchstack --min-boost 25
 - 📝 **Manifest tracking** - JSON manifest of all downloads
 - 🎨 **Beautiful CLI** - Interactive wizard with color output
 - 🔄 **Update detection** - Re-download when newer versions exist
+- 🧭 **Semgrep triage** - Local PHP + JavaScript candidate filtering with repository rules
 
 ---
 
@@ -55,11 +56,12 @@ pip install requests
 # For memory-aware worker limits
 pip install psutil
 
-# For auto-triage feature (requires separate wp-taint-scan tool)
-# See: https://github.com/dimasma0305/wp-taint-scan
+# Optional: local Semgrep engine for triage
+python -m pip install semgrep
+# or: pipx install semgrep
 ```
 
-> **Note**: The `--auto-triage` and `--triage-only` features require [wp-taint-scan](https://github.com/dimasma0305/wp-taint-scan) to be built separately. For basic plugin downloading, only `requests` is needed.
+> **Note**: Semgrep is optional. Downloading works with only `requests`; `--auto-triage` and `--triage-only` stop safely with an install hint when Semgrep is unavailable. Triage results are candidates for manual review, not proof that a plugin is vulnerable or clean.
 
 ---
 
@@ -82,10 +84,13 @@ python wp_plugin_hunter.py
 ```
 
 The wizard will guide you through:
-1. Source selection (wp.org or Patchstack VDP)
-2. Filtering options (install tier, date range, limits)
-3. Output directory
-4. Download confirmation
+1. Choosing an action: download, scan an existing folder, or check setup
+2. Source selection (wp.org or Patchstack VDP)
+3. Filtering options (install tier, date range, limits)
+4. Output directory and safe triage mode
+
+You can use numeric choices (`1`–`4`) or type the action name. No flags are
+needed for the normal workflow.
 
 ### Command-Line Mode
 
@@ -211,11 +216,22 @@ Output:
 Download Control:
   --workers N             Parallel download threads (default: 3, max: 5)
   --api-workers N         Parallel API fetchers (default: 5)
+  --max-download-mb N     Maximum size of one downloaded archive (default: 512)
   --preview               Show what would download without downloading
   --no-download           Skip download (collect metadata only)
   --update-check          Re-download if newer version exists
   --force                 Re-download all (ignore cache)
   --reset-manifest        Clear download history
+
+Triage Safety:
+  --auto-triage            Scan and preview folders with no Semgrep candidate
+  --confirm-delete         Allow live deletion after the confirmation prompt
+  --triage-only DIR        Triage an existing marked folder
+  --allow-unmarked-triage  Explicitly allow a legacy folder after verification
+  --triage-dry-run         Preview triage deletion candidates
+  --semgrep PATH           Semgrep executable (auto-detected from PATH)
+  --semgrep-rules PATH     Rule file (default: rules/wordpress-triage.yml)
+  --keep-extracted         Keep extracted source folders after triage
 
 Display:
   --quiet                 Suppress table output, show only progress
@@ -277,7 +293,17 @@ python wp_plugin_hunter.py --installs 50K
 
 # 4. Export list for tracking
 ls wp_plugins_50K/ > downloaded_list.txt
+
+# 5. Optional: triage locally with the repository's Semgrep rules
+python wp_plugin_hunter.py --triage-only ./wp_plugins_50K --triage-dry-run
+# Review vuln_report.txt, vuln_plugins.txt, and triage_results.json
 ```
+
+Triage deletes only folders whose successful Semgrep scan returned no candidate
+matches. Outdated plugins, missing source, ambiguous findings, and every scan
+error are retained. Live deletion additionally requires `--confirm-delete` and
+an interactive confirmation. The phrase “no Semgrep candidate matched” is not a
+security guarantee.
 
 ---
 

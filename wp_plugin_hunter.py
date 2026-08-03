@@ -7,7 +7,7 @@ berdasarkan jumlah active installations.
 Quick start (no flags needed — interactive mode):
   python wp_plugin_hunter.py
 
-One-liner download + triage:
+One-liner download + triage preview:
   python wp_plugin_hunter.py --installs 10K --auto-triage
 
 Common workflows:
@@ -20,8 +20,8 @@ Common workflows:
   # Download + auto triage (preview deletions first)
   python wp_plugin_hunter.py --installs 10K --auto-triage --triage-dry-run
 
-  # Download + auto triage (commit deletions)
-  python wp_plugin_hunter.py --installs 10K --auto-triage
+  # Download + auto triage (commit deletions explicitly)
+  python wp_plugin_hunter.py --installs 10K --auto-triage --confirm-delete
 
   # Triage only an existing folder
   python wp_plugin_hunter.py --triage-only "Z:\\Pentest\\Plugin\\wp_plugins_10K"
@@ -29,7 +29,7 @@ Common workflows:
   # Search + download
   python wp_plugin_hunter.py --installs 5K --search "file manager"
 
-  # Check setup (dependencies + taint-scan path)
+  # Check setup (dependencies + Semgrep status)
   python wp_plugin_hunter.py --check
 
 All flags:
@@ -47,14 +47,16 @@ All flags:
   --update-check          Re-download if a newer version exists on wp.org
   --force                 Re-download even if file already exists on disk
   --reset-manifest        Forget all downloaded plugins (re-downloads on next run)
-  --auto-triage           After download: scan & delete folders with no vuln findings
+  --auto-triage           After download: scan and preview no-candidate folders
+  --confirm-delete        Allow live deletion after triage confirmation
   --triage-only DIR       Triage an existing folder without downloading anything
   --triage-workers N      Parallel scan workers (default: 4)
   --triage-timeout N      Per-plugin scan timeout seconds (default: 120)
   --triage-dry-run        Triage: show what would be deleted, don't actually delete
-  --keep-extracted        Keep extracted/ folders after triage (default: clean up)
-  --taint-scan PATH       Path to taint-scan.exe (auto-detected if omitted)
-  --check                 Verify setup (dependencies, taint-scan path) then exit
+  --keep-extracted        Keep extracted/ folders after triage (default: remove them)
+  --semgrep PATH          Path to Semgrep executable (auto-detected if omitted)
+  --semgrep-rules PATH    Path to Semgrep rule file (repository default)
+  --check                 Verify setup (dependencies and Semgrep) then exit
   --quiet                 Suppress plugin list table, show only progress + summary
 """
 
@@ -64,6 +66,7 @@ import json
 import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -74,6 +77,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed, Future
 from datetime import datetime
 from html.parser import HTMLParser
 from pathlib import Path
+from urllib.parse import urlsplit
 
 # Guard: give a helpful error if requests is not installed.
 try:
@@ -88,6 +92,18 @@ except ImportError:
 
 API_URL = "https://api.wordpress.org/plugins/info/1.2/"
 MANIFEST_FILE = "downloaded_slugs.json"
+ROOT_MARKER_FILE = ".wp-hunter-root"
+
+# Resource and input safety limits.  Plugin archives are untrusted input: the
+# limits prevent a malformed or malicious response from exhausting disk/RAM.
+MAX_DOWNLOAD_BYTES = 512 * 1024 * 1024
+MAX_ARCHIVE_MEMBERS = 50_000
+MAX_ARCHIVE_MEMBER_BYTES = 256 * 1024 * 1024
+MAX_ARCHIVE_UNPACKED_BYTES = 1 * 1024 * 1024 * 1024
+MAX_API_WORKERS = 10
+SAFE_SLUG_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+SAFE_FILENAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,254}$")
+ALLOWED_DOWNLOAD_HOST_SUFFIX = ".wordpress.org"
 
 # Make stdout/stderr tolerant of Unicode (progress bars, box chars, ✓) even when
 # the console codepage is cp1252 or output is piped to a file.
@@ -109,9 +125,11 @@ def _safe_triage_workers(requested: int, mem_mb_per_worker: int) -> tuple[int, s
     """
     Return (safe_workers, warning_msg).
     Caps requested workers so total scan RAM stays within ~60% of available RAM.
-    Each taint-scan process can burst to 2-3× mem_mb_per_worker on mega-plugins.
+    Each Semgrep process can burst to 2-3× mem_mb_per_worker on mega-plugins.
     We use a 2.5× burst factor as a conservative estimate.
     """
+    requested = max(1, requested)
+    mem_mb_per_worker = max(1, mem_mb_per_worker)
     try:
         import psutil
         available_mb = psutil.virtual_memory().available // (1024 * 1024)
@@ -130,10 +148,106 @@ def _safe_triage_workers(requested: int, mem_mb_per_worker: int) -> tuple[int, s
         return safe_limit, warn
     return requested, ""
 
-_TAINT_SCAN_CANDIDATES = [
-    Path(__file__).parent / "wp-taint-scan" / "bin" / "taint-scan.exe",
-    Path(__file__).parent / "wp-taint-scan" / "taint-scan.exe",
-]
+
+def _display_text(value: object, limit: int | None = None) -> str:
+    """Make remote metadata safe to print to a terminal."""
+    text = re.sub(r"[\x00-\x1f\x7f\x80-\x9f]", " ", str(value or ""))
+    return text[:limit] if limit is not None else text
+
+
+def _is_safe_slug(slug: object) -> bool:
+    """Accept only one simple directory component for a plugin slug."""
+    return isinstance(slug, str) and bool(SAFE_SLUG_RE.fullmatch(slug))
+
+
+def _is_safe_filename(filename: object) -> bool:
+    return isinstance(filename, str) and bool(SAFE_FILENAME_RE.fullmatch(filename))
+
+
+def _safe_download_url(download_url: object) -> bool:
+    """Only follow HTTPS WordPress.org download URLs from API metadata."""
+    if not isinstance(download_url, str):
+        return False
+    try:
+        parsed = urlsplit(download_url)
+        host = (parsed.hostname or "").lower().rstrip(".")
+        has_credentials = parsed.username is not None or parsed.password is not None
+        has_port = parsed.port is not None
+    except ValueError:
+        return False
+    if parsed.scheme.lower() != "https" or not host:
+        return False
+    if has_credentials or has_port:
+        return False
+    return host == "wordpress.org" or host.endswith(ALLOWED_DOWNLOAD_HOST_SUFFIX)
+
+
+def _safe_download_filename(download_url: str, slug: str) -> str:
+    """Derive a harmless local filename; never use a URL query as a path."""
+    try:
+        candidate = Path((urlsplit(download_url).path or "").replace("\\", "/")).name
+    except ValueError:
+        candidate = ""
+    if not _is_safe_filename(candidate) or candidate in {".", ".."}:
+        return f"{slug}.zip"
+    return candidate
+
+
+def _ensure_hunter_root(output_dir: str | Path) -> Path:
+    """Create and return a non-symlink hunter root with an ownership marker."""
+    raw = Path(output_dir).expanduser()
+    if raw.is_symlink():
+        raise ValueError(f"Refusing symlink output root: {raw}")
+    raw.mkdir(parents=True, exist_ok=True)
+    root = raw.resolve()
+    marker = root / ROOT_MARKER_FILE
+    if marker.exists() and not marker.is_file():
+        raise ValueError(f"Root marker is not a file: {marker}")
+    if not marker.exists():
+        try:
+            with open(marker, "x", encoding="utf-8") as fh:
+                fh.write("wp-hunter root\n")
+        except FileExistsError:
+            pass
+    return root
+
+
+def _validate_triage_root(output_dir: str | Path, allow_unmarked: bool = False) -> Path:
+    """Validate a triage root before any source scan or deletion."""
+    raw = Path(output_dir).expanduser()
+    if raw.is_symlink() or not raw.is_dir():
+        raise ValueError(f"Triage root must be a real directory: {raw}")
+    root = raw.resolve()
+    marker = root / ROOT_MARKER_FILE
+    if not allow_unmarked and not marker.is_file():
+        raise ValueError(
+            f"Refusing unmarked triage root: {root}. "
+            f"Use --allow-unmarked-triage only after verifying the directory."
+        )
+    return root
+
+
+def _is_direct_child(root: Path, candidate: str | Path) -> bool:
+    """Ensure a deletion target is a real direct child of the triage root."""
+    path = Path(candidate)
+    if path.is_symlink():
+        return False
+    try:
+        return path.resolve().parent == root.resolve()
+    except OSError:
+        return False
+
+
+def _csv_safe(value: object) -> object:
+    """Prevent spreadsheet formula injection in generated CSV reports."""
+    if value is None:
+        return ""
+    text = str(value)
+    if text.startswith(("=", "+", "-", "@")):
+        return "'" + text
+    return text
+
+SEMGREP_RULES_DEFAULT = Path(__file__).parent / "rules" / "wordpress-triage.yml"
 
 
 # ---------------------------------------------------------------------------
@@ -198,7 +312,7 @@ class ProgressBar:
         line = f"  {self._label} [{bar}] {done}/{self._total} ({pct:.0%}){eta}"
         if message:
             avail = max(10, cols - len(line) - 3)
-            line += f"  {message[:avail]}"
+            line += f"  {_display_text(message, avail)}"
         if self._is_tty:
             sys.stdout.write(f"\r{line}")
             sys.stdout.flush()
@@ -252,7 +366,8 @@ class DownloadManifest:
         if self._path.exists():
             try:
                 with open(self._path, "r", encoding="utf-8") as fh:
-                    return json.load(fh)
+                    data = json.load(fh)
+                    return data if isinstance(data, dict) else {}
             except (json.JSONDecodeError, OSError):
                 return {}
         return {}
@@ -269,17 +384,35 @@ class DownloadManifest:
             raise
 
     def is_downloaded(self, slug: str) -> bool:
-        return slug in self._data
+        with self._lock:
+            entry = self._data.get(slug)
+            if not isinstance(entry, dict):
+                return False
+            filename = entry.get("filename", "")
+        if not _is_safe_slug(slug) or not _is_safe_filename(filename):
+            return False
+        local_file = self._path.parent / slug / filename
+        try:
+            return local_file.is_file() and local_file.stat().st_size > 0
+        except OSError:
+            return False
 
     def get_version(self, slug: str) -> str:
-        return self._data.get(slug, {}).get("version", "")
+        with self._lock:
+            entry = self._data.get(slug, {})
+            return entry.get("version", "") if isinstance(entry, dict) else ""
 
-    def mark_downloaded(self, slug: str, filename: str, size_kb: int, version: str) -> None:
+    def mark_downloaded(
+        self, slug: str, filename: str, size_kb: int, version: str, sha256: str = ""
+    ) -> None:
+        if not _is_safe_slug(slug) or not _is_safe_filename(filename):
+            raise ValueError("Refusing to write an unsafe manifest entry")
         with self._lock:
             self._data[slug] = {
                 "filename": filename,
                 "size_kb": size_kb,
                 "version": version,
+                "sha256": sha256,
                 "downloaded_at": time.strftime("%Y-%m-%d %H:%M:%S"),
             }
             self._save()
@@ -291,7 +424,8 @@ class DownloadManifest:
                 self._save()
 
     def count(self) -> int:
-        return len(self._data)
+        with self._lock:
+            return len(self._data)
 
 
 # ---------------------------------------------------------------------------
@@ -325,11 +459,31 @@ def parse_installs_input(value: str) -> int:
     return int(value)
 
 
+def _positive_cli_int(value: str) -> int:
+    try:
+        parsed = int(value)
+    except ValueError as exc:
+        raise ValueError("must be an integer") from exc
+    if parsed < 1:
+        raise ValueError("must be >= 1")
+    return parsed
+
+
+def _nonnegative_cli_int(value: str) -> int:
+    try:
+        parsed = int(value)
+    except ValueError as exc:
+        raise ValueError("must be an integer") from exc
+    if parsed < 0:
+        raise ValueError("must be >= 0")
+    return parsed
+
+
 # ---------------------------------------------------------------------------
 # Setup check
 # ---------------------------------------------------------------------------
 
-def cmd_check(taint_scan_path: str | None = None) -> None:
+def cmd_check(semgrep_path: str | None = None, semgrep_rules: str | None = None) -> None:
     """Verify prerequisites and print a setup status report."""
     print("\n  === Setup Check ===\n")
     all_ok = True
@@ -350,18 +504,18 @@ def cmd_check(taint_scan_path: str | None = None) -> None:
         print("  ✗ requests — not installed. Fix: pip install requests")
         all_ok = False
 
-    # 3. taint-scan (optional — only needed for --auto-triage / --triage-only)
-    ts = _find_taint_scan(taint_scan_path)
-    if ts:
-        print(f"  ✓ taint-scan  →  {ts}")
+    # 3. Semgrep (optional — only needed for triage)
+    sg = _find_semgrep(semgrep_path)
+    rules = Path(semgrep_rules).expanduser() if semgrep_rules else SEMGREP_RULES_DEFAULT
+    if sg and rules.is_file():
+        print(f"  ✓ Semgrep    →  {sg}")
+        print(f"  ✓ Rules      →  {rules}")
     else:
-        print(
-            "  ⚠ taint-scan — not found (optional — only needed for --auto-triage)\n"
-            "    Build it:\n"
-            "      git clone https://github.com/dimasma0305/wp-taint-scan\n"
-            "      cd wp-taint-scan\n"
-            "      go build -o bin/taint-scan ./cmd/taint-scan"
-        )
+        if not sg:
+            print("  ⚠ Semgrep — not found (optional — only needed for triage)")
+            print(f"    {_semgrep_install_hint()}")
+        if not rules.is_file():
+            print(f"  ⚠ Semgrep rules — not found: {rules}")
 
     # 4. Disk space (warn if < 5 GB free on the script's drive)
     try:
@@ -432,6 +586,8 @@ def _ask_choice(prompt: str, choices: list[str], default: str) -> str:
     while True:
         raw = _ask(f"{prompt} ({opts})", default).lower()
         resolved = _CHOICE_ALIASES.get(raw, raw)
+        if raw.isdigit() and 1 <= int(raw) <= len(choices):
+            resolved = choices[int(raw) - 1].lower()
         if resolved in [c.lower() for c in choices]:
             return resolved
         matches = [c for c in choices if c.lower().startswith(raw)]
@@ -457,18 +613,120 @@ def _print_section(title: str):
 
 def _check_status_line() -> str:
     """One-liner setup status for the header."""
-    ts = _find_taint_scan(None)
-    ts_ok = _green("taint-scan ✓") if ts else _yellow("taint-scan ⚠ (optional)")
-    return f"  {_dim('Setup:')}  python {sys.version.split()[0]}  |  {ts_ok}"
+    semgrep = _find_semgrep(None)
+    sg_ok = _green("Semgrep ✓") if semgrep else _yellow("Semgrep ⚠ (optional)")
+    return f"  {_dim('Setup:')}  python {sys.version.split()[0]}  |  {sg_ok}"
+
+
+def _clean_path_input(value: str) -> str:
+    """Accept paths pasted from Explorer/terminals, including quoted paths."""
+    value = value.strip()
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in {'"', "'"}:
+        value = value[1:-1].strip()
+    return os.path.expanduser(value)
+
+
+def _interactive_triage_wizard() -> "argparse.Namespace":
+    """Collect triage settings without requiring command-line flags."""
+    import argparse
+
+    _print_section("Scan an existing plugin folder")
+    while True:
+        folder = _clean_path_input(_ask("Plugin folder to scan"))
+        if not folder:
+            print(f"    {_yellow('→')} A folder path is required.")
+            continue
+        folder_path = Path(folder)
+        if not folder_path.is_dir():
+            print(f"    {_yellow('→')} Folder not found: {folder}")
+            continue
+        break
+
+    marker_present = (folder_path / ROOT_MARKER_FILE).is_file()
+    allow_unmarked = False
+    if not marker_present:
+        print(f"\n  {_yellow('This folder was not created by the hunter.')}")
+        print("  It may still be a valid legacy folder, but verify the path carefully.")
+        allow_unmarked = (
+            _ask_choice("Continue with this unmarked folder?", ["no", "yes"], "no") == "yes"
+        )
+        if not allow_unmarked:
+            print(f"  {_yellow('Cancelled.')} Use the main menu to choose another action.\n")
+            sys.exit(0)
+
+    years_str = _ask("Skip plugins older than N years (0 = scan all)", "2")
+    try:
+        min_updated_years = max(0, int(years_str))
+    except ValueError:
+        min_updated_years = 2
+
+    mode = _ask_choice(
+        "Triage mode",
+        ["dry-run", "live"],
+        "dry-run",
+    )
+    keep_extracted = _ask_choice("Keep extracted source folders?", ["no", "yes"], "no") == "yes"
+    semgrep_path = _clean_path_input(_ask("Path to Semgrep (Enter = auto-detect)") or "") or None
+    rules_path = _clean_path_input(
+        _ask("Path to Semgrep rules (Enter = repository default)", str(SEMGREP_RULES_DEFAULT))
+    )
+
+    _print_section("Ready to scan")
+    print(f"  Folder     :  {folder_path}")
+    print(f"  Date filter:  {min_updated_years} year(s)" if min_updated_years else "  Date filter:  none")
+    print(f"  Mode       :  {'live — no-candidate folders may be deleted' if mode == 'live' else 'dry-run — nothing deleted'}")
+    print(f"  Extracted  :  {'keep' if keep_extracted else 'remove after scan'}")
+    print(f"  Semgrep    :  {semgrep_path or 'auto-detect from PATH'}")
+    print(f"  Rules      :  {rules_path}")
+    print()
+    if _ask_choice("Start scan?", ["yes", "no"], "yes") != "yes":
+        print(f"\n  {_yellow('Cancelled.')}")
+        sys.exit(0)
+
+    return argparse.Namespace(
+        check=False,
+        triage_only=str(folder_path),
+        allow_unmarked_triage=allow_unmarked,
+        semgrep=semgrep_path,
+        semgrep_rules=rules_path,
+        triage_workers=2,
+        triage_timeout=120,
+        triage_mem_mb=1024,
+        triage_dry_run=mode == "dry-run",
+        confirm_delete=mode == "live",
+        keep_extracted=keep_extracted,
+        min_updated_years=min_updated_years,
+    )
 
 
 def interactive_wizard() -> "argparse.Namespace":
-    """Full interactive wizard — runs when script is called with no flags."""
+    """Main interactive menu and download wizard for flag-free use."""
     import argparse
 
     _print_header()
     print(_check_status_line())
-    print(_dim("\n  Press Enter to accept [defaults].  Ctrl-C to cancel.\n"))
+    print(_dim("\n  Choose an action. Press Enter to accept [defaults]. Ctrl-C to cancel.\n"))
+    print("  1. Download plugins from wp.org or Patchstack")
+    print("  2. Scan an existing plugin folder")
+    print("  3. Check setup and dependencies")
+    print("  4. Exit\n")
+
+    action = _ask_choice(
+        "What would you like to do?",
+        ["download", "triage", "check", "exit"],
+        "download",
+    )
+    if action == "triage":
+        return _interactive_triage_wizard()
+    if action == "check":
+        return argparse.Namespace(
+            check=True, semgrep=None, semgrep_rules=str(SEMGREP_RULES_DEFAULT)
+        )
+    if action == "exit":
+        print(f"\n  {_yellow('Goodbye.')}")
+        sys.exit(0)
+
+    print(_dim("\n  Download wizard selected. Press Enter to accept [defaults].\n"))
 
     # ── Step 1: Source ────────────────────────────────────────────────────
     _print_section("Step 1 of 5  –  Choose plugin source")
@@ -552,12 +810,14 @@ def interactive_wizard() -> "argparse.Namespace":
     # ── Step 5: Auto-triage ──────────────────────────────────────────────
     do_triage = False
     triage_dry = False
+    semgrep_path: str | None = None
+    semgrep_rules = str(SEMGREP_RULES_DEFAULT)
     if do_download:
         _print_section("Step 5 of 5  –  Auto-triage")
-        print(f"  After downloading, scan each plugin with taint-scan and delete")
-        print(f"  folders that have {_bold('zero in-scope findings')}.")
+        print(f"  After downloading, scan each plugin with Semgrep and delete")
+        print(f"  folders where {_bold('no Semgrep candidate matched')}.")
         print()
-        print(f"  {_bold('yes')}       scan + delete clean folders  {_dim('(saves disk, irreversible)')}")
+        print(f"  {_bold('yes')}       scan + delete no-candidate folders  {_dim('(saves disk, irreversible)')}")
         print(f"  {_bold('dry-run')}   scan + report what would be deleted, nothing deleted")
         print(f"  {_bold('no')}        skip triage, download only  {_dim('(default — triage later anytime)')}")
         print()
@@ -566,6 +826,12 @@ def interactive_wizard() -> "argparse.Namespace":
         if triage_ans in ("yes", "dry-run"):
             do_triage = True
             triage_dry = triage_ans == "dry-run"
+            semgrep_path = _clean_path_input(
+                _ask("Path to Semgrep (Enter = auto-detect)") or ""
+            ) or None
+            semgrep_rules = _clean_path_input(
+                _ask("Path to Semgrep rules (Enter = repository default)", semgrep_rules)
+            )
     else:
         print()
         print(f"  {_dim('Step 5 of 5  –  Auto-triage  (skipped, no download)')}")
@@ -598,7 +864,9 @@ def interactive_wizard() -> "argparse.Namespace":
         if triage_dry:
             print(f"  Triage     :  {_yellow('dry-run')}  (scan only, no deletions)")
         else:
-            print(f"  Triage     :  {_green('yes')}  (clean folders will be deleted)")
+            print(f"  Triage     :  {_green('yes')}  (no-candidate folders will be deleted)")
+        print(f"  Semgrep    :  {semgrep_path or 'auto-detect from PATH'}")
+        print(f"  Rules      :  {semgrep_rules}")
     else:
         print(f"  Triage     :  no")
 
@@ -625,6 +893,7 @@ def interactive_wizard() -> "argparse.Namespace":
         output=output_dir,
         no_download=not do_download,
         workers=3,
+        max_download_mb=MAX_DOWNLOAD_BYTES // (1024 * 1024),
         limit=limit,
         preview=False,
         force=False,
@@ -638,7 +907,10 @@ def interactive_wizard() -> "argparse.Namespace":
         triage_mem_mb=1024,
         triage_dry_run=triage_dry,
         keep_extracted=False,
-        taint_scan=None,
+        allow_unmarked_triage=False,
+        confirm_delete=do_triage and not triage_dry,
+        semgrep=semgrep_path,
+        semgrep_rules=semgrep_rules,
         quiet=False,
         min_updated_years=min_updated_years,
         since=None,
@@ -668,6 +940,7 @@ def _build_api_params(
         "request[fields][requires]": "true",
         "request[fields][requires_php]": "true",
         "request[fields][tested]": "true",
+        "request[fields][md5]": "true",
     }
     if search:
         params.pop("request[browse]", None)
@@ -715,6 +988,7 @@ def _fetch_wporg_plugin_info(slug: str) -> dict | None:
         "request[fields][active_installs]": "true",
         "request[fields][last_updated]": "true",
         "request[fields][downloaded]": "true",
+        "request[fields][md5]": "true",
     }
     try:
         resp = requests.get(WP_PLUGIN_INFO_API, params=params, timeout=20)
@@ -752,6 +1026,7 @@ def collect_patchstack_plugins(
     Date filter (mutually exclusive, since takes priority): since="YYYY-MM-DD"
     for an explicit cutoff, or min_updated_years=N for "last N years".
     """
+    api_workers = max(1, min(api_workers, MAX_API_WORKERS))
     cutoff_dt = _resolve_cutoff_date(min_updated_years, since)
 
     print(f"\n{'='*60}")
@@ -919,6 +1194,7 @@ def _parse_plugin_record(plugin: dict) -> dict:
         "requires_php": plugin.get("requires_php", ""),
         "tested": plugin.get("tested", ""),
         "download_link": plugin.get("download_link", ""),
+        "md5": plugin.get("md5", ""),
         "tags": list(plugin["tags"].values())
                 if isinstance(plugin.get("tags"), dict)
                 else list(plugin.get("tags") or []),
@@ -989,6 +1265,8 @@ def collect_plugins(
       since             — explicit cutoff date "YYYY-MM-DD" (or "YYYY-MM"/"YYYY").
       min_updated_years — relative cutoff: last N years from today.
     """
+    api_workers = max(1, min(api_workers, MAX_API_WORKERS))
+    max_pages = max(1, max_pages)
     cutoff_dt = _resolve_cutoff_date(min_updated_years, since)
     is_min_mode = installs_mode == "min"
 
@@ -1128,6 +1406,14 @@ def _md5_of_file(path: Path) -> str:
     return h.hexdigest()
 
 
+def _sha256_of_file(path: Path) -> str:
+    h = hashlib.sha256()
+    with open(path, "rb") as fh:
+        for chunk in iter(lambda: fh.read(65_536), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
 # ---------------------------------------------------------------------------
 # Single-plugin download
 # ---------------------------------------------------------------------------
@@ -1146,10 +1432,10 @@ def build_global_slug_index(base_dir: str | None) -> set[str]:
         return set()
     seen: set[str] = set()
     for folder in base.iterdir():
-        if not folder.is_dir() or not folder.name.startswith("wp_plugins_"):
+        if not folder.is_dir() or folder.is_symlink() or not folder.name.startswith("wp_plugins_"):
             continue
         for p in folder.iterdir():
-            if p.is_dir() and not p.name.startswith(("_", ".")):
+            if p.is_dir() and not p.is_symlink() and not p.name.startswith(("_", ".")):
                 seen.add(p.name)
     return seen
 
@@ -1160,17 +1446,22 @@ def download_plugin(
     manifest: DownloadManifest | None = None,
     update_check: bool = False,
     global_slugs: set[str] | None = None,
+    max_bytes: int = MAX_DOWNLOAD_BYTES,
 ) -> tuple[bool, str, str]:
-    slug = plugin["slug"]
+    slug = plugin.get("slug", "")
+    if not _is_safe_slug(slug):
+        return False, str(slug), "Rejected unsafe plugin slug"
     download_url = plugin.get("download_link", "")
     if not download_url:
         return False, slug, "No download link"
+    if not _safe_download_url(download_url):
+        return False, slug, "Rejected non-WordPress HTTPS download URL"
 
     # Global dedup: skip if already present in any other wp_plugins_* folder.
     if skip_existing and global_slugs and slug in global_slugs:
         # Still record in manifest so future runs skip it too.
         if manifest and not manifest.is_downloaded(slug):
-            filename = download_url.rstrip("/").split("/")[-1]
+            filename = _safe_download_filename(download_url, slug)
             manifest.mark_downloaded(slug, filename, 0, plugin.get("version", ""))
         return True, slug, "Already in another folder (dedup)"
 
@@ -1183,30 +1474,61 @@ def download_plugin(
         else:
             return True, slug, "Already downloaded"
 
-    plugin_dir = Path(output_dir) / slug
+    output_path = Path(output_dir)
+    if output_path.is_symlink() or not output_path.is_dir():
+        return False, slug, "Rejected invalid output root"
+    root = output_path.resolve()
+    raw_plugin_dir = root / slug
+    if raw_plugin_dir.is_symlink():
+        return False, slug, "Rejected symlink plugin directory"
+    plugin_dir = raw_plugin_dir.resolve()
+    if plugin_dir.parent != root:
+        return False, slug, "Rejected plugin path outside output root"
     plugin_dir.mkdir(parents=True, exist_ok=True)
-    filename = download_url.rstrip("/").split("/")[-1]
+    filename = _safe_download_filename(download_url, slug)
     filepath = plugin_dir / filename
 
     if skip_existing and filepath.exists() and filepath.stat().st_size > 0:
+        if filepath.is_symlink():
+            return False, slug, "Rejected symlink download file"
         if manifest:
-            manifest.mark_downloaded(slug, filename, filepath.stat().st_size // 1024, plugin.get("version", ""))
+            manifest.mark_downloaded(
+                slug, filename, filepath.stat().st_size // 1024,
+                plugin.get("version", ""), _sha256_of_file(filepath),
+            )
         return True, slug, "Already on disk"
 
     last_exc: Exception | None = None
+    tmp_path = filepath.with_suffix(".part")
     for attempt in range(1, DOWNLOAD_MAX_RETRIES + 1):
         try:
-            resp = requests.get(download_url, timeout=60, stream=True)
-            resp.raise_for_status()
-            tmp_path = filepath.with_suffix(".part")
-            with open(tmp_path, "wb") as fh:
-                for chunk in resp.iter_content(chunk_size=8192):
-                    fh.write(chunk)
+            with requests.get(download_url, timeout=(15, 60), stream=True) as resp:
+                resp.raise_for_status()
+                if not _safe_download_url(resp.url):
+                    raise ValueError("redirected to a non-WordPress URL")
+                content_length = resp.headers.get("Content-Length")
+                if content_length:
+                    try:
+                        content_length_int = int(content_length)
+                    except (TypeError, ValueError):
+                        content_length_int = 0
+                    if content_length_int > max_bytes:
+                        raise ValueError(f"response exceeds {max_bytes} byte limit")
+                written = 0
+                with open(tmp_path, "wb") as fh:
+                    for chunk in resp.iter_content(chunk_size=8192):
+                        if not chunk:
+                            continue
+                        written += len(chunk)
+                        if written > max_bytes:
+                            raise ValueError(f"download exceeds {max_bytes} byte limit")
+                        fh.write(chunk)
             tmp_path.replace(filepath)
             last_exc = None
             break
         except Exception as exc:
             last_exc = exc
+            tmp_path.unlink(missing_ok=True)
             if attempt < DOWNLOAD_MAX_RETRIES:
                 time.sleep(2 ** attempt)
 
@@ -1221,11 +1543,17 @@ def download_plugin(
             filepath.unlink(missing_ok=True)
             return False, slug, "MD5 mismatch — file deleted (corrupted download)"
 
+    sha256 = _sha256_of_file(filepath)
+
     meta_file = plugin_dir / "plugin_info.json"
+    if meta_file.is_symlink():
+        return False, slug, "Rejected symlink metadata file"
     with open(meta_file, "w", encoding="utf-8") as fh:
-        json.dump(plugin, fh, indent=2, ensure_ascii=False)
+        metadata = dict(plugin)
+        metadata["downloaded_sha256"] = sha256
+        json.dump(metadata, fh, indent=2, ensure_ascii=False)
     if manifest:
-        manifest.mark_downloaded(slug, filename, size_kb, plugin.get("version", ""))
+        manifest.mark_downloaded(slug, filename, size_kb, plugin.get("version", ""), sha256)
 
     md5_note = " ✓md5" if expected_md5 else ""
     return True, slug, f"OK ({size_kb} KB) v{plugin.get('version', '')}{md5_note}"
@@ -1239,9 +1567,13 @@ def download_all(
     plugins: list[dict], output_dir: str,
     max_workers: int = 3, skip_existing: bool = True, update_check: bool = False,
     global_slugs: set[str] | None = None,
+    max_bytes: int = MAX_DOWNLOAD_BYTES,
 ) -> None:
-    Path(output_dir).mkdir(parents=True, exist_ok=True)
-    manifest = DownloadManifest(Path(output_dir))
+    max_workers = max(1, min(max_workers, 5))
+    max_bytes = max(1, max_bytes)
+    output_root = _ensure_hunter_root(output_dir)
+    output_dir = str(output_root)
+    manifest = DownloadManifest(output_root)
 
     # Pre-flight summary
     already = sum(1 for p in plugins if skip_existing and manifest.is_downloaded(p["slug"]))
@@ -1266,7 +1598,10 @@ def download_all(
 
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         futures = {
-            executor.submit(download_plugin, p, output_dir, skip_existing, manifest, update_check, global_slugs): p
+            executor.submit(
+                download_plugin, p, output_dir, skip_existing, manifest,
+                update_check, global_slugs, max_bytes,
+            ): p
             for p in plugins
         }
         for future in as_completed(futures):
@@ -1317,7 +1652,7 @@ def export_results(plugins: list[dict], output_dir: str, target_installs: int) -
             for p in plugins:
                 row = dict(p)
                 row["tags"] = "|".join(p.get("tags") or [])
-                writer.writerow(row)
+                writer.writerow({k: _csv_safe(v) for k, v in row.items()})
 
     print(f"  Exported: {json_path.name}  +  {csv_path.name}")
     return json_path, csv_path
@@ -1338,7 +1673,7 @@ def export_patchstack_results(plugins: list[dict], output_dir: str) -> tuple[Pat
         writer = csv.DictWriter(fh, fieldnames=fields, extrasaction="ignore")
         writer.writeheader()
         for p in plugins:
-            writer.writerow(p)
+            writer.writerow({k: _csv_safe(v) for k, v in p.items()})
 
     print(f"  Exported: {json_path.name}  +  {csv_path.name}")
     return json_path, csv_path
@@ -1360,44 +1695,50 @@ def print_summary_table(plugins: list[dict], quiet: bool = False) -> None:
     print(f"\n  {'No':<4} {'Plugin Name':<42} {'Slug':<30} {'Ver':<8} {'Updated':<12}")
     print(f"  {'-'*4} {'-'*42} {'-'*30} {'-'*8} {'-'*12}")
     for i, p in enumerate(show, 1):
-        print(f"  {i:<4} {p['name'][:41]:<42} {p['slug'][:29]:<30} "
-              f"{p['version'][:7]:<8} {(p['last_updated'] or 'N/A')[:10]:<12}")
+        name = _display_text(p.get("name", ""), 41)
+        slug = _display_text(p.get("slug", ""), 29)
+        version = _display_text(p.get("version", ""), 7)
+        updated = _display_text(p.get("last_updated") or "N/A", 10)
+        print(f"  {i:<4} {name:<42} {slug:<30} "
+              f"{version:<8} {updated:<12}")
     if len(plugins) > 50:
         print(f"  … and {len(plugins) - 50} more  (full list in exported JSON/CSV)")
 
 
 # ---------------------------------------------------------------------------
-# taint-scan helpers
+# Semgrep helpers
 # ---------------------------------------------------------------------------
 
-def _find_taint_scan(explicit: str | None) -> str | None:
+def _find_semgrep(explicit: str | None) -> str | None:
+    """Find a real Semgrep executable without installing anything."""
     if explicit:
-        if os.path.isfile(explicit):
+        if os.path.isfile(explicit) and not os.path.islink(explicit):
             return explicit
-        print(f"  [ERROR] taint-scan not found at: {explicit}", file=sys.stderr)
+        print(f"  [ERROR] Semgrep not found at: {explicit}", file=sys.stderr)
         return None
-    for p in _TAINT_SCAN_CANDIDATES:
-        if p.exists():
-            return str(p)
-    found = shutil.which("taint-scan") or shutil.which("taint-scan.exe")
-    return found
+    return shutil.which("semgrep") or shutil.which("semgrep.exe")
 
 
-def _taint_scan_or_exit(explicit: str | None) -> str:
-    """Return taint-scan path or print a helpful error and exit."""
-    ts = _find_taint_scan(explicit)
-    if ts:
-        return ts
-    print(
-        "\n  [ERROR] taint-scan.exe not found.\n"
-        "  Build it with:\n"
-        "    git clone https://github.com/dimasma0305/wp-taint-scan\n"
-        "    cd wp-taint-scan\n"
-        "    go build -o bin/taint-scan.exe ./cmd/taint-scan\n"
-        "  Or pass: --taint-scan <path>\n",
-        file=sys.stderr,
+def _semgrep_install_hint() -> str:
+    return (
+        "Install Semgrep locally with one of:\n"
+        "    python -m pip install semgrep\n"
+        "    pipx install semgrep\n"
+        "Then verify with: semgrep --version"
     )
-    sys.exit(1)
+
+
+def _semgrep_or_exit(explicit: str | None, rules_path: str | None = None) -> tuple[str, Path]:
+    """Return usable Semgrep executable/rules or stop before triage."""
+    semgrep = _find_semgrep(explicit)
+    if not semgrep:
+        print(f"\n  [ERROR] Semgrep was not found.\n  {_semgrep_install_hint()}\n", file=sys.stderr)
+        sys.exit(1)
+    rules = Path(rules_path).expanduser() if rules_path else SEMGREP_RULES_DEFAULT
+    if not rules.is_file():
+        print(f"\n  [ERROR] Semgrep rules not found: {rules}\n", file=sys.stderr)
+        sys.exit(1)
+    return semgrep, rules.resolve()
 
 
 # ---------------------------------------------------------------------------
@@ -1405,72 +1746,219 @@ def _taint_scan_or_exit(explicit: str | None) -> str:
 # ---------------------------------------------------------------------------
 
 _IN_SCOPE_TIERS = {
-    "unauthenticated", "nonce_only", "permission_callback",
-    "authenticated", "unknown", "",
+    "unauthenticated", "subscriber", "contributor", "author",
+    "low_privilege", "nonce_only", "permission_callback",
+}
+_KNOWN_OUT_OF_SCOPE_TIERS = {
+    "admin", "administrator", "editor", "super_admin", "capability_checked",
 }
 _TIER_WEIGHT = {
     "unauthenticated": 1000, "permission_callback": 700, "nonce_only": 600,
-    "authenticated": 400, "unknown": 300, "": 300, "capability_checked": 50,
+    "subscriber": 550, "contributor": 500, "author": 450,
+    "low_privilege": 500, "authenticated": 400, "unknown": 300, "": 300,
+    "capability_checked": 50,
 }
 
 
+def _validate_zip_members(zf: zipfile.ZipFile) -> None:
+    """Reject unsafe names, symlinks, duplicates, and oversized archives."""
+    members = zf.infolist()
+    if len(members) > MAX_ARCHIVE_MEMBERS:
+        raise ValueError(f"archive has too many members ({len(members)})")
+    total_size = 0
+    seen: set[str] = set()
+    for info in members:
+        raw_name = info.filename.replace("\\", "/")
+        if not raw_name or "\x00" in raw_name:
+            raise ValueError("archive contains an invalid member name")
+        if raw_name.startswith("/") or re.match(r"^[A-Za-z]:", raw_name):
+            raise ValueError(f"absolute archive member: {info.filename!r}")
+        parts = raw_name.split("/")
+        if any(part in {".", ".."} for part in parts):
+            raise ValueError(f"traversal archive member: {info.filename!r}")
+        normalized = raw_name.rstrip("/")
+        if normalized in seen:
+            raise ValueError(f"duplicate archive member: {info.filename!r}")
+        seen.add(normalized)
+        mode = (info.external_attr >> 16) & 0o170000
+        if stat.S_ISLNK(mode):
+            raise ValueError(f"symlink archive member: {info.filename!r}")
+        if info.file_size > MAX_ARCHIVE_MEMBER_BYTES:
+            raise ValueError(f"archive member exceeds size limit: {info.filename!r}")
+        total_size += max(0, info.file_size)
+        if total_size > MAX_ARCHIVE_UNPACKED_BYTES:
+            raise ValueError("archive exceeds total unpacked size limit")
+
+
 def _ensure_extracted(plugin_dir: str) -> str | None:
-    ext_dir = os.path.join(plugin_dir, "extracted")
-    if os.path.isdir(ext_dir) and os.listdir(ext_dir):
-        return ext_dir
+    root = Path(plugin_dir)
+    if root.is_symlink() or not root.is_dir():
+        raise ValueError("plugin directory is not a real directory")
+    ext_dir = root / "extracted"
+    if ext_dir.is_symlink():
+        raise ValueError("extracted directory is a symlink")
+    if ext_dir.is_dir() and any(ext_dir.iterdir()):
+        return str(ext_dir)
     # Find the best zip: prefer the one whose name most closely matches the folder name.
     zips = [
-        os.path.join(plugin_dir, f)
-        for f in os.listdir(plugin_dir)
-        if f.lower().endswith(".zip")
+        root / f
+        for f in os.listdir(root)
+        if f.lower().endswith(".zip") and (root / f).is_file() and not (root / f).is_symlink()
     ]
     if not zips:
-        php_here = any(f.lower().endswith(".php") for f in os.listdir(plugin_dir))
-        return plugin_dir if php_here else None
+        php_here = any(
+            f.lower().endswith(".php") and (root / f).is_file()
+            for f in os.listdir(root)
+        )
+        return str(root) if php_here else None
     if len(zips) > 1:
-        folder_name = os.path.basename(plugin_dir).lower()
+        folder_name = root.name.lower()
         # Prefer zip whose stem matches the folder name, fall back to largest.
         named_match = next(
-            (z for z in zips if Path(z).stem.lower().startswith(folder_name[:8])), None
+            (z for z in zips if z.stem.lower().startswith(folder_name[:8])), None
         )
-        zip_path = named_match or max(zips, key=os.path.getsize)
+        zip_path = named_match or max(zips, key=lambda z: z.stat().st_size)
     else:
         zip_path = zips[0]
+
+    temporary_dir: Path | None = None
     try:
-        os.makedirs(ext_dir, exist_ok=True)
         with zipfile.ZipFile(zip_path) as zf:
-            zf.extractall(ext_dir)
-        return ext_dir
+            _validate_zip_members(zf)
+            temporary_dir = Path(tempfile.mkdtemp(prefix=".extract-", dir=str(root)))
+            zf.extractall(temporary_dir)
+        if ext_dir.exists():
+            if not ext_dir.is_dir() or ext_dir.is_symlink():
+                raise ValueError("extracted path is not a safe directory")
+            if any(ext_dir.iterdir()):
+                shutil.rmtree(temporary_dir, ignore_errors=True)
+                temporary_dir = None
+                return str(ext_dir)
+            ext_dir.rmdir()
+        os.replace(temporary_dir, ext_dir)
+        temporary_dir = None
+        return str(ext_dir)
     except Exception as e:
-        print(f"  [WARN] Extract failed for {os.path.basename(plugin_dir)}: {e}", file=sys.stderr)
-        return None
-
-
-def _run_taint_scan(taint_scan: str, target_dir: str, timeout: int, mem_mb: int) -> tuple[list, str]:
-    out_dir = tempfile.mkdtemp(prefix="tsc_")
-    try:
-        cmd = [taint_scan, "-target", target_dir, "-output-dir", out_dir,
-               "-mem-limit-mb", str(mem_mb)]
-        try:
-            proc = subprocess.run(
-                cmd, timeout=timeout, capture_output=True, check=False,
-            )
-            if proc.returncode not in (0, 1):  # 1 = findings found (normal)
-                stderr_hint = proc.stderr.decode("utf-8", errors="replace")[:200].strip()
-                return [], f"SCAN_ERR:{proc.returncode}" + (f" — {stderr_hint}" if stderr_hint else "")
-        except subprocess.TimeoutExpired:
-            return [], "TIMEOUT"
-        except Exception as exc:
-            return [], f"SCAN_ERR:{exc}"
-
-        json_path = os.path.join(out_dir, "taint-results.json")
-        if not os.path.isfile(json_path):
-            return [], "NO_OUTPUT"
-        with open(json_path, "r", encoding="utf-8", errors="replace") as fh:
-            data = json.load(fh)
-        return data.get("results", []) or [], "OK"
+        print(f"  [WARN] Extract failed for {root.name}: {e}", file=sys.stderr)
+        raise
     finally:
-        shutil.rmtree(out_dir, ignore_errors=True)
+        if temporary_dir is not None:
+            shutil.rmtree(temporary_dir, ignore_errors=True)
+
+
+def _decode_process_output(value: object, limit: int = 512) -> str:
+    """Convert subprocess output to bounded, terminal-safe text."""
+    if isinstance(value, bytes):
+        value = value.decode("utf-8", errors="replace")
+    return _display_text(str(value or ""), limit).strip()
+
+
+def _normalize_semgrep_result(raw: object) -> dict:
+    """Map Semgrep's JSON result into the classifier's stable internal shape."""
+    if not isinstance(raw, dict):
+        return {"check_id": "semgrep.unknown", "extra": {"context": {"access": "unknown"}}}
+
+    extra = raw.get("extra") if isinstance(raw.get("extra"), dict) else {}
+    metadata = extra.get("metadata") if isinstance(extra.get("metadata"), dict) else {}
+    triage = metadata.get("triage") if isinstance(metadata.get("triage"), dict) else {}
+    access = str(triage.get("access", "unknown") or "unknown").lower().strip()
+    category = str(triage.get("category", "unknown") or "unknown").strip()
+    confidence = str(triage.get("confidence", "unknown") or "unknown").strip()
+    start = raw.get("start") if isinstance(raw.get("start"), dict) else {}
+    end = raw.get("end") if isinstance(raw.get("end"), dict) else {}
+
+    return {
+        "check_id": str(raw.get("check_id", "semgrep.unknown") or "semgrep.unknown"),
+        "file": str(raw.get("path", "") or ""),
+        "line": start.get("line"),
+        "end_line": end.get("line"),
+        "message": str(extra.get("message", "") or ""),
+        "category": category,
+        "confidence": confidence,
+        "extra": {
+            "context": {"access": access},
+            "metadata": metadata,
+        },
+        # Keep the original result for JSON reporting and later investigation.
+        "semgrep": raw,
+    }
+
+
+def _run_semgrep_scan(
+    semgrep_path: str,
+    rules_path: Path,
+    target_dir: str,
+    timeout: int,
+    mem_mb: int,
+) -> tuple[list[dict], str]:
+    """Run local Semgrep without a shell and return normalized candidate findings."""
+    del mem_mb  # Semgrep CE has no portable per-process memory flag.
+    target = Path(target_dir)
+    if target.is_symlink() or not target.is_dir():
+        return [], "INVALID_TARGET"
+    for current, dirnames, filenames in os.walk(target, followlinks=False):
+        if any((Path(current) / name).is_symlink() for name in (*dirnames, *filenames)):
+            return [], "SYMLINK_TARGET"
+    if rules_path.is_symlink() or not rules_path.is_file():
+        return [], "INVALID_RULES"
+
+    cmd = [
+        semgrep_path,
+        "--config", str(rules_path),
+        "--json",
+        "--no-git-ignore",
+        str(target),
+    ]
+    try:
+        proc = subprocess.run(
+            cmd,
+            timeout=max(1, timeout),
+            capture_output=True,
+            check=False,
+            stdin=subprocess.DEVNULL,
+            shell=False,
+        )
+    except subprocess.TimeoutExpired:
+        return [], "TIMEOUT"
+    except FileNotFoundError:
+        return [], "BINARY_NOT_FOUND"
+    except Exception as exc:
+        return [], f"SCAN_ERR:{_decode_process_output(exc, 200)}"
+
+    # Exit 1 is the normal Semgrep result for findings; all other non-zero
+    # codes are errors and must preserve the plugin.
+    if proc.returncode not in (0, 1):
+        stderr_hint = _decode_process_output(getattr(proc, "stderr", ""), 200)
+        suffix = f" — {stderr_hint}" if stderr_hint else ""
+        return [], f"SCAN_ERR:{proc.returncode}{suffix}"
+
+    stdout = getattr(proc, "stdout", "")
+    if isinstance(stdout, bytes):
+        stdout = stdout.decode("utf-8", errors="replace")
+    if not isinstance(stdout, str) or not stdout.strip():
+        return [], "INVALID_OUTPUT"
+    if len(stdout) > 64 * 1024 * 1024:
+        return [], "OUTPUT_TOO_LARGE"
+    try:
+        data = json.loads(stdout)
+    except (TypeError, json.JSONDecodeError):
+        return [], "INVALID_OUTPUT"
+    if not isinstance(data, dict) or not isinstance(data.get("results"), list):
+        return [], "INVALID_OUTPUT"
+    return [_normalize_semgrep_result(item) for item in data["results"]], "OK"
+
+
+class SemgrepEngine:
+    """Small adapter around the local Semgrep Community Edition CLI."""
+
+    def __init__(self, executable: str, rules_path: str | Path):
+        self.executable = executable
+        self.rules_path = Path(rules_path).expanduser().resolve()
+
+    def scan(self, target_dir: str, timeout: int, mem_mb: int) -> tuple[list[dict], str]:
+        return _run_semgrep_scan(
+            self.executable, self.rules_path, target_dir, timeout, mem_mb
+        )
 
 
 def _classify(results: list) -> tuple[dict, dict, int]:
@@ -1478,11 +1966,20 @@ def _classify(results: list) -> tuple[dict, dict, int]:
     check_counts: dict[str, int] = {}
     in_scope = 0
     for r in results:
-        access = (r.get("extra", {}).get("context", {}) or {}).get("access", "") or ""
-        check = r.get("check_id", "?")
+        if not isinstance(r, dict):
+            in_scope += 1  # Unknown scanner output must never trigger deletion.
+            continue
+        extra = r.get("extra") if isinstance(r.get("extra"), dict) else {}
+        context = extra.get("context") if isinstance(extra.get("context"), dict) else {}
+        access = context.get("access", "") or ""
+        access = str(access).lower().strip()
+        check = str(r.get("check_id", "?"))
         tier_counts[access] = tier_counts.get(access, 0) + 1
         check_counts[check] = check_counts.get(check, 0) + 1
-        if access in _IN_SCOPE_TIERS:
+        # Treat unknown/ambiguous labels as potentially in-scope. This is
+        # intentionally fail-closed: a new scanner label must not cause a
+        # plugin to be deleted silently.
+        if access in _IN_SCOPE_TIERS or access not in _KNOWN_OUT_OF_SCOPE_TIERS:
             in_scope += 1
     return tier_counts, check_counts, in_scope
 
@@ -1507,11 +2004,11 @@ def _plugin_last_updated_year(plugin_dir: str) -> int | None:
     return None
 
 
-def _triage_one(plugin_dir: str, taint_scan: str, timeout: int, mem_mb: int,
+def _triage_one(plugin_dir: str, engine: SemgrepEngine, timeout: int, mem_mb: int,
                 max_age_years: int = 0) -> dict:
     name = os.path.basename(plugin_dir.rstrip("\\/"))
     res = dict(name=name, dir=plugin_dir, status="OK",
-               total=0, in_scope=0, tiers={}, checks={}, keep=False)
+               total=0, in_scope=0, tiers={}, checks={}, findings=[], keep=False)
 
     # Date filter: skip plugin that hasn't been updated within max_age_years.
     if max_age_years > 0:
@@ -1519,18 +2016,26 @@ def _triage_one(plugin_dir: str, taint_scan: str, timeout: int, mem_mb: int,
         cutoff = datetime.now().year - max_age_years
         if year is not None and year < cutoff:
             res["status"] = f"OUTDATED ({year})"
-            res["keep"] = False
+            res["keep"] = True
             return res
         # If no metadata at all, fall through and let the scan decide.
 
-    target = _ensure_extracted(plugin_dir)
+    try:
+        target = _ensure_extracted(plugin_dir)
+    except Exception as exc:
+        res["status"] = f"EXTRACT_ERROR:{exc}"
+        res["keep"] = True
+        return res
     if not target:
         # No source found — mark explicitly so the deletion reason is clear in report.
         res["status"] = "NO_SOURCE"
-        res["keep"] = False
+        res["keep"] = True
         return res
 
-    results, status = _run_taint_scan(taint_scan, target, timeout, mem_mb)
+    try:
+        results, status = engine.scan(target, timeout, mem_mb)
+    except Exception as exc:
+        results, status = [], f"SCAN_ERR:{exc}"
     res["status"] = status
     # Conservative: keep on any scan failure so we never silently lose a target.
     if status != "OK":
@@ -1538,45 +2043,80 @@ def _triage_one(plugin_dir: str, taint_scan: str, timeout: int, mem_mb: int,
         return res
 
     tiers, checks, in_scope = _classify(results)
-    res.update(total=len(results), in_scope=in_scope, tiers=tiers, checks=checks)
+    res.update(
+        total=len(results), in_scope=in_scope, tiers=tiers,
+        checks=checks, findings=results,
+    )
     res["keep"] = in_scope > 0
     return res
 
 
 def _fmt_triage_summary(res: dict) -> str:
     tier_str = " ".join(
-        f"{t or 'empty'}={c}"
+        f"{_display_text(t or 'empty')}={c}"
         for t, c in sorted(res["tiers"].items(), key=lambda kv: -_TIER_WEIGHT.get(kv[0], 100))
     )
     top = sorted(res["checks"].items(), key=lambda kv: -kv[1])[:4]
-    check_str = ", ".join(f"{c}({n})" for c, n in top)
+    check_str = ", ".join(f"{_display_text(c)}({n})" for c, n in top)
     return (
-        f"{res['name']} | total={res['total']} in_scope={res['in_scope']}"
+        f"{_display_text(res['name'])} | total={res['total']} in_scope={res['in_scope']}"
         + (f" | tiers: {tier_str}" if tier_str else "")
         + (f" | {check_str}" if check_str else "")
     )
 
 
+def _fmt_finding(finding: dict) -> str:
+    """Render one normalized candidate finding for the human report."""
+    file_name = _display_text(finding.get("file", "?"), 180) or "?"
+    line = _display_text(finding.get("line", "?"), 20) or "?"
+    rule = _display_text(finding.get("check_id", "?"), 120) or "?"
+    category = _display_text(finding.get("category", "unknown"), 60) or "unknown"
+    confidence = _display_text(finding.get("confidence", "unknown"), 30) or "unknown"
+    access = "unknown"
+    extra = finding.get("extra") if isinstance(finding.get("extra"), dict) else {}
+    context = extra.get("context") if isinstance(extra.get("context"), dict) else {}
+    if context.get("access"):
+        access = _display_text(context["access"], 40)
+    message = _display_text(finding.get("message", ""), 240)
+    detail = (
+        f"    - {file_name}:{line} | rule={rule} | category={category} | "
+        f"confidence={confidence} | access={access}"
+    )
+    return detail + (f" | {message}" if message else "")
+
+
 def run_triage(
-    output_dir: str, taint_scan: str,
+    output_dir: str, semgrep_path: str, semgrep_rules: str | Path,
     workers: int = 4, timeout: int = 120, mem_mb: int = 2048,
-    dry_run: bool = False, keep_extracted: bool = False,
-    max_age_years: int = 2,
+    dry_run: bool = True, keep_extracted: bool = False,
+    max_age_years: int = 2, allow_unmarked: bool = False,
 ) -> None:
+    workers = max(1, workers)
+    timeout = max(1, timeout)
+    mem_mb = max(1, mem_mb)
+    try:
+        root = _validate_triage_root(output_dir, allow_unmarked=allow_unmarked)
+    except ValueError as exc:
+        print(f"  [ERROR] {exc}", file=sys.stderr)
+        return
+    output_dir = str(root)
+    engine = SemgrepEngine(semgrep_path, semgrep_rules)
     ts_fmt = datetime.now().strftime("%H:%M:%S")
     print(f"\n{'='*60}")
     print(f"  Vulnerability Triage  [{ts_fmt}]")
     print(f"  Folder   : {output_dir}")
+    print(f"  Engine   : Semgrep ({engine.executable})")
+    print(f"  Rules    : {engine.rules_path}")
     print(f"  Workers  : {workers}  |  Timeout: {timeout}s/plugin")
     cutoff_label = f"  Filter   : skip plugins last updated before {datetime.now().year - max_age_years} ({max_age_years}yr cutoff)"
     print(cutoff_label if max_age_years > 0 else "  Filter   : no date filter (scanning all)")
-    print(f"  Mode     : {'DRY RUN — nothing will be deleted' if dry_run else 'LIVE — clean folders will be deleted'}")
+    print(f"  Mode     : {'DRY RUN — nothing will be deleted' if dry_run else 'LIVE — no-candidate folders will be deleted'}")
     print(f"{'='*60}")
 
     plugin_dirs = sorted(
-        os.path.join(output_dir, d)
-        for d in os.listdir(output_dir)
-        if os.path.isdir(os.path.join(output_dir, d)) and not d.startswith("_")
+        str(p)
+        for p in root.iterdir()
+        if p.is_dir() and not p.is_symlink() and not p.name.startswith(("_", "."))
     )
     total = len(plugin_dirs)
     if total == 0:
@@ -1590,7 +2130,7 @@ def run_triage(
 
     with ThreadPoolExecutor(max_workers=workers) as executor:
         fut_map = {
-            executor.submit(_triage_one, d, taint_scan, timeout, mem_mb, max_age_years): d
+            executor.submit(_triage_one, d, engine, timeout, mem_mb, max_age_years): d
             for d in plugin_dirs
         }
         for fut in as_completed(fut_map):
@@ -1599,7 +2139,7 @@ def run_triage(
             except Exception as exc:
                 d = fut_map[fut]
                 r = dict(name=os.path.basename(d), dir=d, status=f"CRASH:{exc}",
-                         total=0, in_scope=0, tiers={}, checks={}, keep=True)
+                         total=0, in_scope=0, tiers={}, checks={}, findings=[], keep=True)
             results.append(r)
             flag = "KEEP" if r["keep"] else "DEL "
             status_note = f" [{r['status']}]" if r["status"] not in ("OK", "NO_SOURCE") else ""
@@ -1608,7 +2148,9 @@ def run_triage(
     bar.finish("Scan complete")
 
     keep = [r for r in results if r["keep"]]
-    delete = [r for r in results if not r["keep"]]
+    # Only successfully scanned plugins with no Semgrep candidate are eligible
+    # for deletion.
+    delete = [r for r in results if r["status"] == "OK" and not r["keep"]]
     vuln = sorted(
         [r for r in keep if r["in_scope"] > 0],
         key=lambda r: (
@@ -1617,29 +2159,22 @@ def run_triage(
             -r["total"],
         ),
     )
-    no_source  = [r for r in delete if r["status"] == "NO_SOURCE"]
-    outdated   = [r for r in delete if r["status"].startswith("OUTDATED")]
-    scan_fail  = [r for r in keep if r["in_scope"] == 0 and r["status"] != "OK"]
+    no_source  = [r for r in results if r["status"] == "NO_SOURCE"]
+    outdated   = [r for r in results if r["status"].startswith("OUTDATED")]
+    scan_fail  = [
+        r for r in keep
+        if r["in_scope"] == 0
+        and r["status"] != "OK"
+        and r["status"] != "NO_SOURCE"
+        and not r["status"].startswith("OUTDATED")
+    ]
 
     # ---- Confirmation prompt before live deletions ----
     if not dry_run and delete:
-        outdated_count = len(outdated)
-        clean_count = len(delete) - len(no_source) - outdated_count
         print(f"\n  About to delete {len(delete)} folders:")
-        if outdated_count:
-            print(f"    {outdated_count} outdated (last_updated older than {max_age_years} years)")
-        if len(no_source):
-            print(f"    {len(no_source)} with no source files")
-        if clean_count:
-            print(f"    {clean_count} with 0 in-scope findings after scan")
+        print(f"    {len(delete)} with no Semgrep candidate matched after a successful scan")
         for r in delete[:8]:
-            if r["status"].startswith("OUTDATED"):
-                reason = f"({r['status']})"
-            elif r["status"] == "NO_SOURCE":
-                reason = "(no source files)"
-            else:
-                reason = "(0 in-scope findings)"
-            print(f"    - {r['name']} {reason}")
+            print(f"    - {r['name']} (no Semgrep candidate matched)")
         if len(delete) > 8:
             print(f"    … and {len(delete) - 8} more")
         print()
@@ -1656,24 +2191,47 @@ def run_triage(
     report_path = os.path.join(output_dir, "vuln_report.txt")
     names_path = os.path.join(output_dir, "vuln_plugins.txt")
     deleted_path = os.path.join(output_dir, "deleted_plugins.txt")
+    json_path = os.path.join(output_dir, "triage_results.json")
+
+    with open(json_path, "w", encoding="utf-8") as fh:
+        json.dump(
+            {
+                "engine": "semgrep",
+                "rules": str(engine.rules_path),
+                "generated": datetime.now().isoformat(timespec="seconds"),
+                "results": sorted(results, key=lambda item: item.get("name", "")),
+            },
+            fh,
+            indent=2,
+            ensure_ascii=False,
+        )
 
     with open(report_path, "w", encoding="utf-8") as fh:
-        fh.write("WP Plugin Vulnerability Triage Report\n")
+        fh.write("WP Plugin Semgrep Triage Report\n")
         fh.write(f"Generated : {datetime.now().isoformat(timespec='seconds')}\n")
         fh.write(f"Folder    : {output_dir}\n")
+        fh.write(f"Engine    : Semgrep\n")
+        fh.write(f"Rules     : {engine.rules_path}\n")
         if max_age_years > 0:
             fh.write(f"Date filter: plugins updated before {datetime.now().year - max_age_years} are skipped\n")
-        fh.write(f"Scanned   : {total}  |  Vuln: {len(vuln)}  |  "
+        fh.write(f"Scanned   : {total}  |  Candidates: {len(vuln)}  |  "
                  f"Outdated (skipped): {len(outdated)}  |  "
-                 f"Scan-fail/timeout: {len(scan_fail)}  |  "
+                 f"Review-needed: {len(scan_fail) + len(no_source) + len(outdated)}  |  "
                  f"{'Would delete' if dry_run else 'Deleted'}: {len(delete)}\n")
+        fh.write(
+            f"Deletion basis: no Semgrep candidate matched after a successful scan "
+            f"({len(delete)} folder(s))\n"
+        )
         fh.write("=" * 70 + "\n\n")
 
         if vuln:
-            fh.write("PLUGINS WITH POTENTIAL VULNERABILITIES (priority order):\n")
+            fh.write("PLUGINS WITH SEMGREP CANDIDATE FINDINGS (manual review required):\n")
             fh.write("-" * 70 + "\n")
             for r in vuln:
                 fh.write(_fmt_triage_summary(r) + "\n")
+                for finding in r.get("findings", []):
+                    if isinstance(finding, dict):
+                        fh.write(_fmt_finding(finding) + "\n")
             fh.write("\n")
 
         if outdated:
@@ -1691,7 +2249,7 @@ def run_triage(
             fh.write("\n")
 
         if no_source:
-            fh.write("DELETED — NO SOURCE FILES FOUND (zip missing or empty):\n")
+            fh.write("KEPT FOR REVIEW — NO SOURCE FILES FOUND (zip missing or empty):\n")
             fh.write("-" * 70 + "\n")
             for r in no_source:
                 fh.write(f"  {r['name']}\n")
@@ -1708,6 +2266,8 @@ def run_triage(
             deleted_names.append(r["name"])
             continue
         try:
+            if not _is_direct_child(root, r["dir"]):
+                raise ValueError("deletion target is not a safe direct child")
             shutil.rmtree(r["dir"])
             deleted_names.append(r["name"])
         except Exception as exc:
@@ -1716,7 +2276,7 @@ def run_triage(
     if not dry_run and not keep_extracted:
         for r in keep:
             ext = os.path.join(r["dir"], "extracted")
-            if os.path.isdir(ext):
+            if os.path.isdir(ext) and not os.path.islink(ext) and _is_direct_child(root, r["dir"]):
                 shutil.rmtree(ext, ignore_errors=True)
 
     marker = "DRY RUN — NOT DELETED" if dry_run else "DELETED"
@@ -1728,17 +2288,19 @@ def run_triage(
     # ---- Final summary ----
     print(f"\n{'='*60}")
     print("  Triage complete")
-    print(f"    Potential vulns  : {len(vuln)}")
-    print(f"    Kept for review  : {len(scan_fail)}  (scan failed/timed out)")
+    print(f"    Semgrep candidates: {len(vuln)}")
+    review_count = len(scan_fail) + len(no_source) + len(outdated)
+    print(f"    Kept for review  : {review_count}  (outdated, no source, or scan failed)")
     if len(outdated):
         print(f"    Outdated/skipped : {len(outdated)}  (updated before {datetime.now().year - max_age_years})")
     print(f"    {'Would delete' if dry_run else 'Deleted'}     : {len(deleted_names)}")
     print(f"    Report           : {report_path}")
     print(f"    Vuln names list  : {names_path}")
+    print(f"    JSON results     : {json_path}")
     if dry_run:
-        print(f"\n  This was a DRY RUN. Re-run without --triage-dry-run to commit deletions.")
+        print(f"\n  This was a DRY RUN. Re-run with --confirm-delete to commit deletions.")
     if vuln:
-        print(f"\n  Top findings:")
+        print(f"\n  Top Semgrep candidates:")
         for r in vuln[:5]:
             print(f"    {_fmt_triage_summary(r)}")
     print(f"{'='*60}\n")
@@ -1763,7 +2325,8 @@ Quick examples:
   %(prog)s                                  # interactive wizard
   %(prog)s --check                          # verify setup
   %(prog)s --installs 10K                   # download 10K+ plugins
-  %(prog)s --installs 10K --auto-triage     # download + scan + delete clean
+  %(prog)s --installs 10K --auto-triage     # download + scan + preview no-candidate folders
+  %(prog)s --installs 10K --auto-triage --confirm-delete  # commit no-candidate deletion
   %(prog)s --installs 10K --auto-triage --triage-dry-run   # preview deletions
   %(prog)s --triage-only ./wp_plugins_10K   # triage existing folder
 
@@ -1783,15 +2346,15 @@ Tip: run without --installs to enter the interactive setup wizard.
                             help="Source plugins from the Patchstack VDP directory "
                                  "(vendor opt-in targets, often with bounty boost). "
                                  "Ignores --installs/--browse.")
-        parser.add_argument("--min-boost", type=int, default=0,
+        parser.add_argument("--min-boost", type=_nonnegative_cli_int, default=0,
                             help="Patchstack: only plugins with bounty boost >= N%% (e.g. 25)")
         parser.add_argument("--include-themes", action="store_true",
                             help="Patchstack: include themes too (default: plugins only)")
         parser.add_argument("--browse", type=str, default="popular",
                             choices=["popular", "new", "updated", "top-rated"])
-        parser.add_argument("--pages", type=int, default=50,
+        parser.add_argument("--pages", type=_positive_cli_int, default=50,
                             help="Max API pages (100 plugins/page, default: 50)")
-        parser.add_argument("--api-workers", type=int, default=API_PARALLEL_WORKERS,
+        parser.add_argument("--api-workers", type=_positive_cli_int, default=API_PARALLEL_WORKERS,
                             help=f"Parallel API fetchers (default: {API_PARALLEL_WORKERS})")
         parser.add_argument("--search", type=str, default=None)
         parser.add_argument("--tag", type=str, default=None)
@@ -1799,9 +2362,11 @@ Tip: run without --installs to enter the interactive setup wizard.
                             help="Output folder (default: ./wp_plugins_<tier>/)")
         parser.add_argument("--no-download", action="store_true",
                             help="Skip download — collect and export list only")
-        parser.add_argument("--workers", type=int, default=3,
+        parser.add_argument("--workers", type=_positive_cli_int, default=3,
                             help="Download threads (default: 3, max: 5)")
-        parser.add_argument("--limit", type=int, default=None)
+        parser.add_argument("--max-download-mb", type=_positive_cli_int, default=MAX_DOWNLOAD_BYTES // (1024 * 1024),
+                            help="Maximum size of one downloaded archive (default: 512 MB)")
+        parser.add_argument("--limit", type=_nonnegative_cli_int, default=None)
         parser.add_argument("--preview", action="store_true",
                             help="Show download plan (what would be fetched) without downloading")
         parser.add_argument("--force", action="store_true",
@@ -1816,18 +2381,22 @@ Tip: run without --installs to enter the interactive setup wizard.
         parser.add_argument("--reset-manifest", action="store_true",
                             help="Clear download cache (re-downloads all on next run)")
         parser.add_argument("--auto-triage", action="store_true",
-                            help="After download: scan & delete folders with no vuln findings")
+                            help="After download: scan and preview folders with no Semgrep candidate")
+        parser.add_argument("--confirm-delete", action="store_true",
+                            help="Allow live deletion after triage confirmation")
         parser.add_argument("--triage-only", type=str, default=None, metavar="DIR",
                             help="Skip download; run triage on an existing folder")
-        parser.add_argument("--triage-workers", type=int, default=2,
+        parser.add_argument("--allow-unmarked-triage", action="store_true",
+                            help="Allow triage of a legacy/unmarked folder after manual verification")
+        parser.add_argument("--triage-workers", type=_positive_cli_int, default=2,
                             help="Parallel scan workers (default: 2, increase carefully — each worker can use 1-3 GB RAM)")
-        parser.add_argument("--triage-timeout", type=int, default=120,
+        parser.add_argument("--triage-timeout", type=_positive_cli_int, default=120,
                             help="Per-plugin scan timeout seconds (default: 120)")
-        parser.add_argument("--triage-mem-mb", type=int, default=1024,
-                            help="Soft heap limit per taint-scan process MB (default: 1024)")
+        parser.add_argument("--triage-mem-mb", type=_positive_cli_int, default=1024,
+                            help="Memory budget used to size Semgrep workers (default: 1024 MB)")
         parser.add_argument("--triage-dry-run", action="store_true",
                             help="Triage: show what would be deleted without deleting")
-        parser.add_argument("--min-updated-years", type=int, default=2,
+        parser.add_argument("--min-updated-years", type=_nonnegative_cli_int, default=2,
                             help="Only include plugins updated within last N years "
                                  "(applies to both download and triage). Default: 2. Set 0 to disable.")
         parser.add_argument("--since", type=str, default=None,
@@ -1836,10 +2405,12 @@ Tip: run without --installs to enter the interactive setup wizard.
                                  "when both are given. Example: --since 2025-01-01")
         parser.add_argument("--keep-extracted", action="store_true",
                             help="Keep extracted/ subfolders after triage")
-        parser.add_argument("--taint-scan", type=str, default=None,
-                            help="Path to taint-scan.exe (auto-detected if omitted)")
+        parser.add_argument("--semgrep", type=str, default=None,
+                            help="Path to Semgrep executable (auto-detected if omitted)")
+        parser.add_argument("--semgrep-rules", type=str, default=None,
+                            help="Path to Semgrep rules (default: rules/wordpress-triage.yml)")
         parser.add_argument("--check", action="store_true",
-                            help="Verify all dependencies and taint-scan path, then exit")
+                            help="Verify dependencies and Semgrep setup, then exit")
         parser.add_argument("--quiet", action="store_true",
                             help="Suppress plugin list table; show only progress + summary")
 
@@ -1851,34 +2422,55 @@ Tip: run without --installs to enter the interactive setup wizard.
 
     # ---- --check ----
     if getattr(args, "check", False):
-        cmd_check(getattr(args, "taint_scan", None))
+        cmd_check(
+            getattr(args, "semgrep", None),
+            getattr(args, "semgrep_rules", None),
+        )
         return
 
     # ---- --triage-only ----
     if getattr(args, "triage_only", None):
-        ts = _taint_scan_or_exit(getattr(args, "taint_scan", None))
+        semgrep_path, semgrep_rules = _semgrep_or_exit(
+            getattr(args, "semgrep", None),
+            getattr(args, "semgrep_rules", None),
+        )
+        try:
+            triage_root = _validate_triage_root(
+                args.triage_only,
+                allow_unmarked=getattr(args, "allow_unmarked_triage", False),
+            )
+        except ValueError as exc:
+            print(f"  [ERROR] {exc}", file=sys.stderr)
+            sys.exit(2)
         req_workers = getattr(args, "triage_workers", 2)
         mem_mb = getattr(args, "triage_mem_mb", 1024)
         safe_w, warn = _safe_triage_workers(req_workers, mem_mb)
         if warn:
             print(f"  [WARN] {warn}", file=sys.stderr)
         run_triage(
-            output_dir=args.triage_only,
-            taint_scan=ts,
+            output_dir=str(triage_root),
+            semgrep_path=semgrep_path,
+            semgrep_rules=semgrep_rules,
             workers=safe_w,
             timeout=getattr(args, "triage_timeout", 120),
             mem_mb=mem_mb,
-            dry_run=getattr(args, "triage_dry_run", False),
+            dry_run=(getattr(args, "triage_dry_run", False)
+                     or not getattr(args, "confirm_delete", False)),
             keep_extracted=getattr(args, "keep_extracted", False),
             max_age_years=getattr(args, "min_updated_years", 2),
+            allow_unmarked=getattr(args, "allow_unmarked_triage", False),
         )
         print("  [DONE] Happy hunting!\n")
         return
 
-    # ---- Validate taint-scan early when --auto-triage is requested ----
-    taint_scan_path: str | None = None
+    # ---- Validate Semgrep early when --auto-triage is requested ----
+    semgrep_path: str | None = None
+    semgrep_rules: Path | None = None
     if getattr(args, "auto_triage", False):
-        taint_scan_path = _taint_scan_or_exit(getattr(args, "taint_scan", None))
+        semgrep_path, semgrep_rules = _semgrep_or_exit(
+            getattr(args, "semgrep", None),
+            getattr(args, "semgrep_rules", None),
+        )
 
     use_patchstack = getattr(args, "patchstack", False)
     target_installs = 0  # only meaningful for wp.org tier mode
@@ -1912,6 +2504,9 @@ Tip: run without --installs to enter the interactive setup wizard.
             print(f"  [ERROR] Invalid {flag} value: {raw_value!r}\n"
                   "  Use: 1K, 5K, 10K, 100K, 1M (or numeric like 10000)", file=sys.stderr)
             sys.exit(1)
+        if target_installs < 1:
+            print("  [ERROR] Install threshold must be greater than zero.", file=sys.stderr)
+            sys.exit(2)
 
         # Tier-snapping only makes sense for exact-match mode (wp.org tiers are
         # discrete buckets). In "min" mode any positive threshold is valid.
@@ -1929,6 +2524,16 @@ Tip: run without --installs to enter the interactive setup wizard.
     max_workers = min(getattr(args, "workers", 3), 5)
     if getattr(args, "workers", 3) > 5:
         print("  [INFO] --workers capped at 5 (to be respectful to WordPress.org)")
+    api_workers = min(getattr(args, "api_workers", API_PARALLEL_WORKERS), MAX_API_WORKERS)
+    if getattr(args, "api_workers", API_PARALLEL_WORKERS) > MAX_API_WORKERS:
+        print(f"  [INFO] --api-workers capped at {MAX_API_WORKERS}")
+    max_download_bytes = getattr(args, "max_download_mb", MAX_DOWNLOAD_BYTES) * 1024 * 1024
+
+    try:
+        output_dir = str(_ensure_hunter_root(output_dir))
+    except (OSError, ValueError) as exc:
+        print(f"  [ERROR] Invalid output root: {exc}", file=sys.stderr)
+        sys.exit(2)
 
     # ---- Reset manifest ----
     if getattr(args, "reset_manifest", False):
@@ -1958,7 +2563,7 @@ Tip: run without --installs to enter the interactive setup wizard.
             min_updated_years=getattr(args, "min_updated_years", 2),
             since=getattr(args, "since", None),
             include_themes=getattr(args, "include_themes", False),
-            api_workers=getattr(args, "api_workers", API_PARALLEL_WORKERS),
+            api_workers=api_workers,
             max_entries=getattr(args, "limit", None),
         )
     else:
@@ -1968,7 +2573,7 @@ Tip: run without --installs to enter the interactive setup wizard.
             max_pages=getattr(args, "pages", 50),
             search=getattr(args, "search", None),
             tag=getattr(args, "tag", None),
-            api_workers=getattr(args, "api_workers", API_PARALLEL_WORKERS),
+            api_workers=api_workers,
             min_updated_years=getattr(args, "min_updated_years", 2),
             since=getattr(args, "since", None),
             installs_mode=installs_mode,
@@ -2018,7 +2623,7 @@ Tip: run without --installs to enter the interactive setup wizard.
                 this_dir = Path(output_dir)
                 if this_dir.is_dir():
                     for d in this_dir.iterdir():
-                        if d.is_dir():
+                        if d.is_dir() and not d.is_symlink():
                             global_slugs.discard(d.name)
                 if global_slugs:
                     print(f"  [INFO] Global dedup active — {len(global_slugs)} slugs already in sibling folders will be skipped.")
@@ -2029,6 +2634,7 @@ Tip: run without --installs to enter the interactive setup wizard.
                 skip_existing=not getattr(args, "force", False),
                 update_check=getattr(args, "update_check", False),
                 global_slugs=global_slugs,
+                max_bytes=max_download_bytes,
             )
             # Hint about next steps
             if not getattr(args, "auto_triage", False):
@@ -2036,7 +2642,7 @@ Tip: run without --installs to enter the interactive setup wizard.
                     f"  Next steps:\n"
                     f"    • Run triage:  python {Path(__file__).name}"
                     f" --triage-only {output_dir}\n"
-                    f"    • Preview:     add --triage-dry-run first\n"
+                    f"    • Commit no-candidate deletion: add --confirm-delete\n"
                 )
     else:
         print("  Download skipped (--no-download)")
@@ -2050,11 +2656,13 @@ Tip: run without --installs to enter the interactive setup wizard.
             print(f"  [WARN] {warn}", file=sys.stderr)
         run_triage(
             output_dir=output_dir,
-            taint_scan=taint_scan_path,
+            semgrep_path=semgrep_path,
+            semgrep_rules=semgrep_rules or SEMGREP_RULES_DEFAULT,
             workers=safe_w,
             timeout=getattr(args, "triage_timeout", 120),
             mem_mb=mem_mb,
-            dry_run=getattr(args, "triage_dry_run", False),
+            dry_run=(getattr(args, "triage_dry_run", False)
+                     or not getattr(args, "confirm_delete", False)),
             keep_extracted=getattr(args, "keep_extracted", False),
             max_age_years=getattr(args, "min_updated_years", 2),
         )
