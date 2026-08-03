@@ -52,7 +52,7 @@ rules:
         category: rest_entrypoint
         access: unauthenticated
         confidence: high
-    pattern-regex: "(?i)permission_callback\\s*=>\\s*['\"]__return_true['\"]"
+    pattern-regex: "(?i)(?:['\"]permission_callback['\"]|permission_callback)\\s*=>\\s*['\"]__return_true['\"]"
 
   - id: wordpress.input-superglobal
     languages: [php]
@@ -104,6 +104,9 @@ rules:
           - pattern: fwrite($HANDLE, $DATA)
           - pattern: fputs($HANDLE, $DATA)
           - pattern: move_uploaded_file($SOURCE, $DESTINATION)
+          - pattern: wp_handle_upload($FILE, $OVERRIDES)
+          - pattern: media_handle_upload($FILE_ID, $POST_ID, ...)
+          - pattern: wp_upload_bits($NAME, $DEPRECATED, $BITS, ...)
           - pattern: copy($SOURCE, $DESTINATION)
           - pattern: rename($SOURCE, $DESTINATION)
 
@@ -138,6 +141,9 @@ rules:
           - pattern: $wpdb->get_row($QUERY)
           - pattern: $wpdb->get_var($QUERY)
           - pattern: $wpdb->get_col($QUERY)
+          - pattern: $wpdb->insert($TABLE, $DATA, ...)
+          - pattern: $wpdb->update($TABLE, $DATA, $WHERE, ...)
+          - pattern: $wpdb->delete($TABLE, $WHERE, ...)
 
   - id: wordpress.option-update
     languages: [php]
@@ -170,6 +176,8 @@ rules:
           - pattern: wp_update_user($USER)
           - pattern: wp_insert_user($USER)
           - pattern: $USER_OBJECT->set_role($ROLE)
+          - pattern: $USER_OBJECT->add_cap($CAPABILITY)
+          - pattern: $USER_OBJECT->remove_cap($CAPABILITY)
           - pattern: add_role($ROLE, $DISPLAY_NAME, $CAPABILITIES)
           - pattern: grant_super_admin($USER)
           - pattern: wp_set_auth_cookie($USER_ID)
@@ -219,12 +227,12 @@ rules:
         confidence: medium
     patterns:
       - pattern-either:
-          - pattern: echo $_GET[$KEY]
-          - pattern: echo $_POST[$KEY]
-          - pattern: echo $_REQUEST[$KEY]
-          - pattern: echo $_COOKIE[$KEY]
-          - pattern: print $_GET[$KEY]
-          - pattern: print $_POST[$KEY]
+          - pattern: echo $_GET[$KEY];
+          - pattern: echo $_POST[$KEY];
+          - pattern: echo $_REQUEST[$KEY];
+          - pattern: echo $_COOKIE[$KEY];
+          - pattern: print $_GET[$KEY];
+          - pattern: print $_POST[$KEY];
           - pattern: printf($FORMAT, $_GET[$KEY])
 
   - id: wordpress.js-input-source

@@ -14,8 +14,11 @@
 # Interactive mode (guided setup)
 python wp_plugin_hunter.py
 
-# One-liner: download all 10K+ plugins
+# One-liner: download plugins in the exact 10K wp.org tier
 python wp_plugin_hunter.py --installs 10K
+
+# Download plugins with at least 10K installs within the pages scanned
+python wp_plugin_hunter.py --min-installs 10K
 
 # Preview what would be downloaded
 python wp_plugin_hunter.py --installs 50K --preview
@@ -28,12 +31,13 @@ python wp_plugin_hunter.py --patchstack --min-boost 25
 
 ## ✨ Features
 
-- 🎯 **Smart targeting** - Download by active install tiers (1K, 10K, 100K, 1M+)
+- 🎯 **Smart targeting** - Exact wp.org tiers or minimum-install thresholds
 - 🏆 **Patchstack VDP** - Fetch plugins from Patchstack vulnerability disclosure programs
 - ⚡ **Fast parallel downloads** - Multi-threaded with retry logic
 - 📊 **Date filtering** - Focus on recently updated plugins
 - 🔍 **Search & tag filtering** - Narrow down to specific plugin types
 - 💾 **Smart caching** - Skip already-downloaded plugins
+- 🛡️ **Verified archives** - Validate redirects, ZIP structure, size, MD5, and SHA-256
 - 📝 **Manifest tracking** - JSON manifest of all downloads
 - 🎨 **Beautiful CLI** - Interactive wizard with color output
 - 🔄 **Update detection** - Re-download when newer versions exist
@@ -48,20 +52,28 @@ python wp_plugin_hunter.py --patchstack --min-boost 25
 - **requests** library
 
 ```bash
-pip install requests
+python -m pip install -r requirements.txt
 ```
 
 ### Optional Dependencies
 ```bash
 # For memory-aware worker limits
-pip install psutil
+python -m pip install -r requirements-optional.txt
 
 # Optional: local Semgrep engine for triage
 python -m pip install semgrep
 # or: pipx install semgrep
 ```
 
-> **Note**: Semgrep is optional. Downloading works with only `requests`; `--auto-triage` and `--triage-only` stop safely with an install hint when Semgrep is unavailable. Triage results are candidates for manual review, not proof that a plugin is vulnerable or clean.
+> **Note**: Semgrep is optional. Downloading works with only `requests`. The
+> guided wizard checks Semgrep before the final confirmation and, when it is
+> unavailable, offers to continue in download-only mode. CLI triage commands
+> stop safely with an installation hint. Triage results are candidates for
+> manual review, not proof that a plugin is vulnerable or safe.
+
+Before a triage batch starts, WP Hunter validates the complete local rule file.
+An invalid rule stops the batch once, before any plugin scan or deletion, and
+prints the failing rule diagnostic.
 
 ---
 
@@ -86,19 +98,24 @@ python wp_plugin_hunter.py
 The wizard will guide you through:
 1. Choosing an action: download, scan an existing folder, or check setup
 2. Source selection (wp.org or Patchstack VDP)
-3. Filtering options (install tier, date range, limits)
+3. Filtering options (exact tier or minimum installs, Patchstack themes, date range, limits)
 4. Output directory and safe triage mode
 
-You can use numeric choices (`1`–`4`) or type the action name. No flags are
-needed for the normal workflow.
+Use the `↑`/`↓` arrow keys and press `Enter` to select menu options. In
+terminals that do not support raw keyboard input, numeric choices or the
+action name remain available as a fallback. No flags are needed for the
+normal workflow.
 
 ### Command-Line Mode
 
 #### Download by Install Tier
 
 ```bash
-# All plugins with 10K+ active installs
+# Plugins in the exact 10K active-install bucket
 python wp_plugin_hunter.py --installs 10K
+
+# Plugins with at least 10K installs within the pages scanned
+python wp_plugin_hunter.py --min-installs 10K
 
 # Tier options: 500, 1K, 2K, 3K, 5K, 10K, 50K, 100K, 1M, 5M
 python wp_plugin_hunter.py --installs 100K --pages 20
@@ -115,6 +132,9 @@ python wp_plugin_hunter.py --patchstack --min-boost 25
 
 # Only plugins with 35%+ boost
 python wp_plugin_hunter.py --patchstack --min-boost 35
+
+# Include Patchstack themes and use the wp.org theme API for downloads
+python wp_plugin_hunter.py --patchstack --include-themes
 ```
 
 #### Advanced Filtering
@@ -152,8 +172,8 @@ python wp_plugin_hunter.py --installs 10K --update-check
 # Force re-download all (ignore manifest)
 python wp_plugin_hunter.py --installs 10K --force
 
-# Reset manifest (forget all previous downloads)
-python wp_plugin_hunter.py --reset-manifest
+# Reset a tier's manifest (safe default is cancel)
+python wp_plugin_hunter.py --installs 10K --reset-manifest
 ```
 
 ---
@@ -163,8 +183,12 @@ python wp_plugin_hunter.py --reset-manifest
 ```
 wp_plugins_10K/
 ├── downloaded_slugs.json          # Manifest of all downloads
-├── plugin_list.csv                # Full metadata CSV
-├── plugin_slugs.txt               # Simple slug list
+├── plugins_10K.json               # Full metadata JSON
+├── plugins_10K.csv                # Full metadata CSV
+├── vuln_report.txt                # Human-readable triage candidates
+├── vuln_plugins.txt               # Candidate plugin names
+├── triage_results.json            # Machine-readable triage state
+├── deleted_plugins.txt            # Dry-run/live deletion record
 ├── akismet/
 │   ├── akismet.5.3.3.zip          # Downloaded plugin
 │   └── plugin_info.json           # Metadata
@@ -184,6 +208,7 @@ wp_plugins_10K/
     "filename": "akismet.5.3.3.zip",
     "size_kb": 523,
     "version": "5.3.3",
+    "sha256": "...",
     "downloaded_at": "2024-01-15 14:23:45"
   }
 }
@@ -197,9 +222,11 @@ wp_plugins_10K/
 Usage: python wp_plugin_hunter.py [OPTIONS]
 
 Source Selection:
-  --installs TIER         Active install tier (500, 1K, 5K, 10K, 50K, 100K, 1M)
+  --installs TIER         Exact active-install tier (500, 1K, 5K, 10K, 100K, 1M)
+  --min-installs N        Minimum active installs (threshold mode)
   --patchstack            Download from Patchstack VDP directory
   --min-boost N           Patchstack: minimum bounty boost % (default: 0)
+  --include-themes        Patchstack: include themes (default: plugins only)
 
 Filtering:
   --browse MODE           Sort: popular | new | updated | top-rated
@@ -212,6 +239,7 @@ Filtering:
 
 Output:
   --output DIR            Output directory (default: ./wp_plugins_<tier>)
+  --adopt-output-root     Reuse a non-empty legacy folder (CLI asks for its exact path)
 
 Download Control:
   --workers N             Parallel download threads (default: 3, max: 5)
@@ -221,14 +249,18 @@ Download Control:
   --no-download           Skip download (collect metadata only)
   --update-check          Re-download if newer version exists
   --force                 Re-download all (ignore cache)
+  --no-global-dedup       Disable deduplication across sibling hunter folders
   --reset-manifest        Clear download history
 
 Triage Safety:
   --auto-triage            Scan and preview folders with no Semgrep candidate
   --confirm-delete         Allow live deletion after the confirmation prompt
   --triage-only DIR        Triage an existing marked folder
-  --allow-unmarked-triage  Explicitly allow a legacy folder after verification
+  --allow-unmarked-triage  Preview a legacy/unmarked folder after verification
   --triage-dry-run         Preview triage deletion candidates
+  --triage-workers N       Parallel Semgrep workers (default: 2)
+  --triage-timeout N       Per-plugin timeout in seconds (default: 120)
+  --triage-mem-mb N        Worker-sizing memory budget (default: 1024 MB)
   --semgrep PATH           Semgrep executable (auto-detected from PATH)
   --semgrep-rules PATH     Rule file (default: rules/wordpress-triage.yml)
   --keep-extracted         Keep extracted source folders after triage
@@ -245,8 +277,8 @@ Display:
 ### 1. High-Priority Targets (Popular Plugins)
 
 ```bash
-# Focus on 100K+ installs (higher bounties)
-python wp_plugin_hunter.py --installs 100K
+# Focus on plugins with at least 100K installs
+python wp_plugin_hunter.py --min-installs 100K
 ```
 
 ### 2. Patchstack VDP Bonuses
@@ -259,8 +291,8 @@ python wp_plugin_hunter.py --patchstack --min-boost 35
 ### 3. Fresh Targets (Recently Updated)
 
 ```bash
-# Plugins updated in last 6 months
-python wp_plugin_hunter.py --installs 10K --min-updated-years 0.5
+# Plugins updated since an explicit date
+python wp_plugin_hunter.py --installs 10K --since 2026-01-01
 ```
 
 
@@ -302,8 +334,17 @@ python wp_plugin_hunter.py --triage-only ./wp_plugins_50K --triage-dry-run
 Triage deletes only folders whose successful Semgrep scan returned no candidate
 matches. Outdated plugins, missing source, ambiguous findings, and every scan
 error are retained. Live deletion additionally requires `--confirm-delete` and
-an interactive confirmation. The phrase “no Semgrep candidate matched” is not a
-security guarantee.
+an interactive confirmation whose safe default is **no**. In the guided wizard,
+an older WP Hunter output folder can be registered once with the arrow-key menu;
+the wizard recommends a dedicated subfolder when the selected location appears
+to be a general-purpose folder. CLI adoption with `--adopt-output-root` still
+requires exact-path confirmation. An unmarked triage root can only be previewed
+until adopted. The phrase “no Semgrep candidate matched” is not a security guarantee.
+
+Dry-run never deletes plugin folders. Extracted scan copies are temporary and
+are cleaned after both dry and live scans unless `--keep-extracted` is set.
+For an explicitly allowed but still-unmarked root, preview mode preserves all
+`extracted/` directories as an additional safeguard.
 
 ---
 
@@ -311,7 +352,7 @@ security guarantee.
 
 ### API Rate Limiting
 
-The script includes built-in rate limiting (0.3s between requests). If you encounter 429 errors:
+The script spaces WordPress.org API request starts by at least 0.3 seconds. If you encounter 429 errors:
 
 ```bash
 # Reduce API workers
@@ -382,11 +423,10 @@ This tool is for **security research and bug bounty purposes only**. Use respons
 
 ## 📈 Stats & Performance
 
-**Typical Performance** (on 100 Mbps connection):
-- **API Collection**: ~5-10 plugins/second
-- **Download Speed**: ~3-5 plugins/second (with 3 workers)
-- **10K+ tier**: ~500 plugins → ~5-10 minutes total
-- **100K+ tier**: ~50 plugins → ~1-2 minutes total
+Performance depends on WordPress.org response times, archive sizes, Semgrep,
+and local disk speed. API request starts are spaced by 0.3 seconds globally;
+use fewer `--api-workers`, download workers, or triage workers if the remote
+service or your machine is under pressure.
 
 ---
 

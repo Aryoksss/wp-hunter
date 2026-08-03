@@ -2,6 +2,13 @@
 __pycache__/
 *.py[cod]
 *$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+.semgrep/
 *.so
 .Python
 build/
@@ -67,6 +74,8 @@ triage_results.json
 # Temporary
 extracted/
 temp_*/
+*.part
+.extract-*/
 
 # Kiro IDE
 .kiro/

@@ -1,0 +1,2 @@
+# Optional: improves memory-aware Semgrep worker sizing.
+psutil>=7.2.2,<8
