@@ -1,5 +1,9 @@
 # WP Hunter
 
+<p align="center">
+  <img src="assets/branding/wp-hunter-logo.png" alt="Logo WP Hunter" width="180">
+</p>
+
 WP Hunter adalah toolkit command-line bilingual untuk mengumpulkan target dari
 WordPress.org dan Patchstack VDP, mengunduh arsip plugin terverifikasi, serta
 menjalankan triage Semgrep secara fail-safe.
