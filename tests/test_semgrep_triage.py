@@ -776,6 +776,45 @@ class CollectionTests(unittest.TestCase):
             )
         self.assertEqual([item["slug"] for item in results], ["match"])
 
+    def test_popular_exact_tier_locates_distant_page_range(self):
+        def query(**kwargs):
+            page = kwargs["page"]
+            if page < 55:
+                installs = 100000 if page == 1 else 2000
+            elif page <= 70:
+                installs = 1000
+            else:
+                installs = 800
+            return {
+                "info": {"pages": 100, "results": 10000},
+                "plugins": [self.plugin(f"plugin-{page}", installs)],
+            }
+
+        output = io.StringIO()
+        with (
+            patch.object(sources, "query_plugins_page", side_effect=query),
+            contextlib.redirect_stdout(output),
+        ):
+            results = sources.collect_plugins(
+                1000,
+                browse="popular",
+                max_pages=5,
+                api_workers=2,
+                min_updated_years=0,
+            )
+
+        self.assertEqual(
+            [item["slug"] for item in results],
+            [
+                "plugin-55",
+                "plugin-56",
+                "plugin-57",
+                "plugin-58",
+                "plugin-59",
+            ],
+        )
+        self.assertIn("Tier pages      : 55-70", output.getvalue())
+
     def test_popular_browse_can_stop_when_first_page_is_below_tier(self):
         first = {
             "info": {"pages": 10, "results": 1000},
