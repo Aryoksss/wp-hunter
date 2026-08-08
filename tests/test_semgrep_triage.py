@@ -14,6 +14,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
+from click import unstyle
 from typer.testing import CliRunner
 
 from wp_hunter import core as hunter
@@ -1025,11 +1026,12 @@ class CliAndRuleTests(unittest.TestCase):
 
     def test_scan_help_exposes_semgrep_and_safe_deletion(self):
         result = CliRunner().invoke(app, ["scan", "--help"], terminal_width=180)
+        output = unstyle(result.output)
         self.assertEqual(result.exit_code, 0)
-        self.assertIn("--semgrep", result.output)
-        self.assertIn("--rules", result.output)
-        self.assertIn("--delete-no-find", result.output)
-        self.assertNotIn("--confirm-delete", result.output)
+        self.assertIn("--semgrep", output)
+        self.assertIn("--rules", output)
+        self.assertIn("--delete-no-find", output)
+        self.assertNotIn("--confirm-delete", output)
 
     def test_indonesian_status_output(self):
         with tempfile.TemporaryDirectory() as temp_name:
