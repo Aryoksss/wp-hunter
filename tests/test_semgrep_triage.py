@@ -5,6 +5,7 @@ import hashlib
 import io
 import json
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -14,7 +15,6 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from click import unstyle
 from typer.testing import CliRunner
 
 from wp_hunter import core as hunter
@@ -1026,7 +1026,7 @@ class CliAndRuleTests(unittest.TestCase):
 
     def test_scan_help_exposes_semgrep_and_safe_deletion(self):
         result = CliRunner().invoke(app, ["scan", "--help"], terminal_width=180)
-        output = unstyle(result.output)
+        output = re.sub(r"\x1b\[[0-9;]*m", "", result.output)
         self.assertEqual(result.exit_code, 0)
         self.assertIn("--semgrep", output)
         self.assertIn("--rules", output)
