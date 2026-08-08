@@ -67,6 +67,7 @@ vuln_report.txt
 deleted_plugins.txt
 vuln_plugins.txt
 triage_results.json
+reviewed_slugs.json
 
 # Hunter ownership marker (created in output roots, including custom roots)
 .wp-hunter-root

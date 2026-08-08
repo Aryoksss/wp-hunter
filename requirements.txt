@@ -1,1 +1,4 @@
 requests>=2.34.2,<3
+typer>=0.16,<1
+rich>=13.9,<15
+questionary>=2.1,<3

@@ -22,9 +22,11 @@ jobs:
           python-version: ${{ matrix.python-version }}
           cache: pip
       - name: Install core dependencies
-        run: python -m pip install -r requirements.txt
+        run: python -m pip install -e ".[dev]"
       - name: Compile source
-        run: python -m compileall -q wp_plugin_hunter.py tests
+        run: python -m compileall -q wp_hunter tests
+      - name: Lint
+        run: ruff check wp_hunter tests
       - name: Run unit tests
         run: python -m unittest discover -s tests -v
 
@@ -38,9 +40,12 @@ jobs:
           python-version: "3.12"
           cache: pip
       - name: Install test dependencies
-        run: python -m pip install -r requirements.txt semgrep
+        run: python -m pip install -e . semgrep
       - name: Validate repository rules
-        run: semgrep --validate --config rules/wordpress-triage.yml
+        run: >-
+          semgrep --disable-version-check --metrics off --quiet
+          --config wp_hunter/resources/wordpress-triage.yml
+          tests/fixtures/triage
       - name: Exercise rules against fixtures
         run: python -m unittest discover -s tests -p "test_semgrep_triage.py" -v
 
@@ -55,6 +60,25 @@ jobs:
           cache: pip
       - name: Audit dependencies
         run: |
-          python -m pip install pip-audit
-          python -m pip_audit -r requirements.txt
+          python -m pip install -e ".[dev]"
+          python -m pip_audit
           python -m pip_audit -r requirements-optional.txt
+
+  package-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Build and install wheel
+        run: |
+          python -m pip install build
+          python -m build --wheel
+          python -m pip install dist/*.whl
+      - name: Smoke test installed command and resources
+        run: |
+          wp-hunter --version
+          python -c "from importlib.resources import files; assert files('wp_hunter.resources').joinpath('wordpress-triage.yml').is_file()"

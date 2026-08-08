@@ -32,6 +32,46 @@ rules:
         confidence: medium
     pattern-regex: 'admin_post_nopriv_[A-Za-z0-9_-]+'
 
+  - id: wordpress.admin-post-authenticated-entrypoint
+    languages: [php]
+    message: Authenticated admin-post action found; review nonce and capability checks.
+    severity: WARNING
+    metadata:
+      triage:
+        category: http_entrypoint
+        access: unknown
+        confidence: low
+    pattern-regex: 'admin_post_(?!nopriv_)[A-Za-z0-9_-]+'
+
+  - id: wordpress.shortcode-entrypoint
+    languages: [php]
+    message: Shortcode callback found; review attacker-controlled attributes and stored output contexts.
+    severity: WARNING
+    metadata:
+      triage:
+        category: shortcode_entrypoint
+        access: contributor
+        confidence: medium
+    pattern: add_shortcode($TAG, $CALLBACK)
+
+  - id: wordpress.public-lifecycle-entrypoint
+    languages: [php]
+    message: Public WordPress lifecycle hook found; trace request input into its callback.
+    severity: WARNING
+    metadata:
+      triage:
+        category: http_entrypoint
+        access: unauthenticated
+        confidence: low
+    patterns:
+      - pattern-either:
+          - pattern: add_action('init', $CALLBACK, ...)
+          - pattern: add_action("init", $CALLBACK, ...)
+          - pattern: add_action('wp_loaded', $CALLBACK, ...)
+          - pattern: add_action("wp_loaded", $CALLBACK, ...)
+          - pattern: add_action('template_redirect', $CALLBACK, ...)
+          - pattern: add_action("template_redirect", $CALLBACK, ...)
+
   - id: wordpress.rest-route
     languages: [php]
     message: WordPress REST route registration found; review permission_callback and input validation.
@@ -41,7 +81,7 @@ rules:
         category: rest_entrypoint
         access: unknown
         confidence: low
-    pattern: register_rest_route($NAMESPACE, $ROUTE, $ARGS)
+    pattern: register_rest_route($NAMESPACE, $ROUTE, $ARGS, ...)
 
   - id: wordpress.rest-permissive-route
     languages: [php]
@@ -193,6 +233,21 @@ rules:
         confidence: low
     pattern: current_user_can($CAPABILITY)
 
+  - id: wordpress.nonce-check
+    languages: [php]
+    message: Nonce verification found; remember that a nonce is CSRF protection, not authorization.
+    severity: WARNING
+    metadata:
+      triage:
+        category: nonce_check
+        access: nonce_only
+        confidence: low
+    patterns:
+      - pattern-either:
+          - pattern: check_ajax_referer(...)
+          - pattern: check_admin_referer(...)
+          - pattern: wp_verify_nonce(...)
+
   - id: wordpress.php-dangerous-execution
     languages: [php]
     message: Dangerous PHP execution or dynamic loading operation found; review all data reaching it.
@@ -210,30 +265,68 @@ rules:
           - pattern: shell_exec($COMMAND)
           - pattern: passthru($COMMAND)
           - pattern: popen($COMMAND, $MODE)
-          - pattern: include $PATH
-          - pattern: include_once $PATH
-          - pattern: require $PATH
-          - pattern: require_once $PATH
           - pattern: unserialize($VALUE)
+
+  - id: wordpress.php-request-to-dynamic-load
+    languages: [php]
+    mode: taint
+    message: Request-controlled input may reach a dynamic PHP include/require operation.
+    severity: WARNING
+    metadata:
+      triage:
+        category: rce_or_dynamic_load
+        access: unknown
+        confidence: high
+    pattern-sources:
+      - patterns:
+          - pattern-either:
+              - pattern: $_GET[$KEY]
+              - pattern: $_POST[$KEY]
+              - pattern: $_REQUEST[$KEY]
+              - pattern: $_COOKIE[$KEY]
+              - pattern: $REQUEST->get_param(...)
+    pattern-sinks:
+      - patterns:
+          - pattern-either:
+              - pattern: include $PATH
+              - pattern: include_once $PATH
+              - pattern: require $PATH
+              - pattern: require_once $PATH
 
   - id: wordpress.php-html-output
     languages: [php]
-    message: Request-controlled value is emitted directly; review escaping before HTML or attribute output.
+    mode: taint
+    message: Request-controlled value may reach HTML output without a recognized context-appropriate escape.
     severity: WARNING
     metadata:
       triage:
         category: xss_output
         access: unknown
         confidence: medium
-    patterns:
-      - pattern-either:
-          - pattern: echo $_GET[$KEY];
-          - pattern: echo $_POST[$KEY];
-          - pattern: echo $_REQUEST[$KEY];
-          - pattern: echo $_COOKIE[$KEY];
-          - pattern: print $_GET[$KEY];
-          - pattern: print $_POST[$KEY];
-          - pattern: printf($FORMAT, $_GET[$KEY])
+    pattern-sources:
+      - patterns:
+          - pattern-either:
+              - pattern: $_GET[$KEY]
+              - pattern: $_POST[$KEY]
+              - pattern: $_REQUEST[$KEY]
+              - pattern: $_COOKIE[$KEY]
+              - pattern: $REQUEST->get_param(...)
+              - pattern: filter_input(...)
+    pattern-sanitizers:
+      - patterns:
+          - pattern-either:
+              - pattern: esc_html(...)
+              - pattern: esc_attr(...)
+              - pattern: esc_url(...)
+              - pattern: esc_js(...)
+              - pattern: wp_kses(...)
+              - pattern: wp_kses_post(...)
+    pattern-sinks:
+      - patterns:
+          - pattern-either:
+              - pattern: echo $VALUE;
+              - pattern: print $VALUE;
+              - pattern: printf($FORMAT, $VALUE, ...)
 
   - id: wordpress.js-input-source
     languages: [javascript]
