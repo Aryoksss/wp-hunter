@@ -59,6 +59,7 @@ def default_config() -> dict[str, Any]:
             "scan_timeout": 120,
             "scan_mem_mb": 1024,
             "max_age_years": 2,
+            "download_limit": 0,
         },
         "recent_roots": [],
         "presets": {},

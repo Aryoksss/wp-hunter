@@ -91,6 +91,51 @@ class StateMigrationTests(unittest.TestCase):
 
 
 class V2CliTests(unittest.TestCase):
+    def test_interactive_wporg_menu_passes_download_limit(self):
+        with tempfile.TemporaryDirectory() as temp_name:
+            save_config(default_config(), Path(temp_name) / "config.json")
+            selection = SimpleNamespace(ask=lambda: "wporg")
+            install_tier = SimpleNamespace(ask=lambda: "1K")
+            download_limit = SimpleNamespace(ask=lambda: "250")
+            minimum = SimpleNamespace(ask=lambda: False)
+            preview = SimpleNamespace(ask=lambda: True)
+            with (
+                patch("wp_hunter.cli.questionary.select", return_value=selection),
+                patch(
+                    "wp_hunter.cli.questionary.text",
+                    side_effect=[install_tier, download_limit],
+                ),
+                patch(
+                    "wp_hunter.cli.questionary.confirm",
+                    side_effect=[minimum, preview],
+                ),
+                patch("wp_hunter.cli._run_download") as run_download,
+            ):
+                result = CliRunner().invoke(app, [], env={"WP_HUNTER_CONFIG_DIR": temp_name})
+
+        self.assertEqual(result.exit_code, 0, result.output)
+        options = run_download.call_args.args[1]
+        self.assertEqual(options.limit, 250)
+        self.assertTrue(options.preview)
+
+    def test_config_can_persist_download_limit(self):
+        with tempfile.TemporaryDirectory() as temp_name:
+            result = CliRunner().invoke(
+                app,
+                ["config", "set", "download_limit", "500"],
+                env={"WP_HUNTER_CONFIG_DIR": temp_name},
+            )
+            invalid = CliRunner().invoke(
+                app,
+                ["config", "set", "download_limit", "-1"],
+                env={"WP_HUNTER_CONFIG_DIR": temp_name},
+            )
+            config = load_config(Path(temp_name) / "config.json")
+
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertEqual(config["defaults"]["download_limit"], 500)
+        self.assertEqual(invalid.exit_code, 2, invalid.output)
+
     def test_replacing_user_preset_requires_confirmation(self):
         with tempfile.TemporaryDirectory() as temp_name:
             config_file = Path(temp_name) / "config.json"

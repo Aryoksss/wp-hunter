@@ -39,5 +39,7 @@
   "prompt.preview": "Preview only?",
   "prompt.min_boost": "Minimum boost",
   "prompt.output_folder": "Output folder",
+  "prompt.download_limit": "Download limit (0 = all)",
+  "prompt.nonnegative_integer": "Enter zero or a positive integer",
   "confirm.delete": "Type the exact folder path to allow deletion"
 }

@@ -65,6 +65,25 @@ def _validate_date(value: str) -> str:
         raise typer.BadParameter("date must be YYYY, YYYY-MM, or YYYY-MM-DD") from exc
 
 
+def _validate_nonnegative_input(value: str) -> bool | str:
+    try:
+        return int(value.strip() or "0") >= 0 or tr("prompt.nonnegative_integer")
+    except ValueError:
+        return tr("prompt.nonnegative_integer")
+
+
+def _ask_download_limit(defaults: dict) -> int | None:
+    value = questionary.text(
+        tr("prompt.download_limit"),
+        default=str(defaults.get("download_limit", 0)),
+        validate=_validate_nonnegative_input,
+    ).ask()
+    if value is None:
+        raise typer.Exit()
+    limit = int(value.strip() or "0")
+    return limit or None
+
+
 @app.callback(invoke_without_command=True)
 def main(
     ctx: typer.Context,
@@ -462,15 +481,17 @@ def config_set(ctx: typer.Context, key: str, value: str) -> None:
         "scan_timeout",
         "scan_mem_mb",
         "max_age_years",
+        "download_limit",
     }:
         try:
             numeric = int(value)
         except ValueError as exc:
             raise typer.BadParameter(f"{key} must be an integer") from exc
-        if key != "max_age_years" and numeric < 1:
+        nonnegative = {"max_age_years", "download_limit"}
+        if key not in nonnegative and numeric < 1:
             raise typer.BadParameter(f"{key} must be greater than zero")
-        if key == "max_age_years" and numeric < 0:
-            raise typer.BadParameter("max_age_years cannot be negative")
+        if key in nonnegative and numeric < 0:
+            raise typer.BadParameter(f"{key} cannot be negative")
         state.config.setdefault("defaults", {})[key] = numeric
     else:
         raise typer.BadParameter("Unsupported key")
@@ -524,6 +545,7 @@ def _interactive_menu(ctx: typer.Context) -> None:
     if action == "wporg":
         installs = questionary.text(tr("prompt.install_tier"), default="10K").ask() or "10K"
         minimum = questionary.confirm(tr("prompt.minimum"), default=False).ask()
+        limit = _ask_download_limit(defaults)
         preview = questionary.confirm(tr("prompt.preview"), default=False).ask()
         _run_download(
             ctx,
@@ -535,11 +557,13 @@ def _interactive_menu(ctx: typer.Context) -> None:
                 max_age_years=int(defaults.get("max_age_years", 2)),
                 workers=int(defaults.get("download_workers", 3)),
                 api_workers=int(defaults.get("api_workers", 5)),
+                limit=limit,
                 preview=bool(preview),
             ),
         )
     elif action == "patchstack":
         boost = questionary.text(tr("prompt.min_boost"), default="0").ask() or "0"
+        limit = _ask_download_limit(defaults)
         preview = questionary.confirm(tr("prompt.preview"), default=False).ask()
         _run_download(
             ctx,
@@ -549,6 +573,7 @@ def _interactive_menu(ctx: typer.Context) -> None:
                 max_age_years=int(defaults.get("max_age_years", 2)),
                 workers=int(defaults.get("download_workers", 3)),
                 api_workers=int(defaults.get("api_workers", 5)),
+                limit=limit,
                 preview=bool(preview),
             ),
         )

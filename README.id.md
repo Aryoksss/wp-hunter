@@ -67,6 +67,13 @@ wp-hunter --lang id status
 wp-hunter config set language id
 ```
 
+Menu download interaktif meminta batas jumlah download. Gunakan `0` untuk semua
+target yang cocok, atau simpan batas default, misalnya 500:
+
+```bash
+wp-hunter config set download_limit 500
+```
+
 Nama command dan flag tetap menggunakan English pada kedua bahasa.
 
 ## Command utama

@@ -39,5 +39,7 @@
   "prompt.preview": "Hanya pratinjau?",
   "prompt.min_boost": "Boost minimum",
   "prompt.output_folder": "Folder output",
+  "prompt.download_limit": "Batas download (0 = semua)",
+  "prompt.nonnegative_integer": "Masukkan angka nol atau bilangan bulat positif",
   "confirm.delete": "Ketik path folder lengkap untuk mengizinkan penghapusan"
 }
