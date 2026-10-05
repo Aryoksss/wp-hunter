@@ -25,7 +25,7 @@ Python projects.
 Install the latest release wheel:
 
 ```bash
-pipx install https://github.com/Aryoksss/wp-hunter/releases/latest/download/wp_hunter-2.1.0-py3-none-any.whl
+pipx install https://github.com/Aryoksss/wp-hunter/releases/latest/download/wp_hunter-2.1.1-py3-none-any.whl
 wp-hunter --version
 wp-hunter doctor
 ```
