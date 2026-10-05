@@ -302,7 +302,7 @@ def download_all(
     max_bytes = max(1, max_bytes)
     output_root = _ensure_hunter_root(output_dir)
     output_dir = str(output_root)
-    manifest = DownloadManifest(output_root)
+    manifest = DownloadManifest(output_root, autosave=False)
     already = sum(1 for p in plugins if skip_existing and manifest.is_downloaded(p["slug"]))
     to_download = len(plugins) - already
     print(f"\n{'=' * 60}")
@@ -362,6 +362,7 @@ def download_all(
             bar.update(message=f"[{status}] {slug}")
 
     bar.finish()
+    manifest.save()
     print(
         f"\n  Results: {success} new  |  {skipped} skipped  |  {updated} updated  |  {failed} failed"
     )

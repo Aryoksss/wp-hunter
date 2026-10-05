@@ -1050,6 +1050,39 @@ class DownloadAndExportTests(unittest.TestCase):
         self.assertFalse(version_is_newer("2.0.0-beta1", "2.0.0"))
         self.assertTrue(version_is_newer("1.10", "1.9"))
 
+    def test_batched_manifest_defers_disk_writes_until_save(self):
+        payload = zip_payload()
+        with tempfile.TemporaryDirectory() as temp_name:
+            root = hunter._ensure_hunter_root(temp_name)
+            manifest = DownloadManifest(root, autosave=False)
+            with patch("wp_hunter.state._atomic_write_json") as write:
+                for index in range(25):
+                    manifest.mark_downloaded(
+                        f"plugin-{index}",
+                        f"plugin-{index}.zip",
+                        len(payload) // 1024,
+                        "1.0.0",
+                        hashlib.sha256(payload).hexdigest(),
+                    )
+                write.assert_not_called()
+                manifest.save()
+                self.assertEqual(write.call_count, 1)
+
+    def test_autosave_manifest_writes_on_each_mark(self):
+        payload = zip_payload()
+        with tempfile.TemporaryDirectory() as temp_name:
+            root = hunter._ensure_hunter_root(temp_name)
+            manifest = DownloadManifest(root)
+            with patch("wp_hunter.state._atomic_write_json") as write:
+                manifest.mark_downloaded(
+                    "solo-plugin",
+                    "solo-plugin.zip",
+                    len(payload) // 1024,
+                    "1.0.0",
+                    hashlib.sha256(payload).hexdigest(),
+                )
+                self.assertEqual(write.call_count, 1)
+
 
 class CliAndRuleTests(unittest.TestCase):
     def test_installed_cli_exposes_version(self):

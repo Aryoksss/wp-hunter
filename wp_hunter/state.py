@@ -58,9 +58,10 @@ def _load_state(path: Path, label: str) -> tuple[dict, bool]:
 
 
 class DownloadManifest:
-    def __init__(self, output_dir: Path):
+    def __init__(self, output_dir: Path, autosave: bool = True):
         self._path = Path(output_dir) / MANIFEST_FILE
         self._lock = threading.Lock()
+        self._autosave = autosave
         self._data, migrated = self._load()
         if migrated:
             self._save()
@@ -75,6 +76,10 @@ class DownloadManifest:
     def _save(self) -> None:
         self._path.parent.mkdir(parents=True, exist_ok=True)
         _atomic_write_json(self._path, _state_payload(self._data))
+
+    def save(self) -> None:
+        with self._lock:
+            self._save()
 
     def is_downloaded(self, slug: str) -> bool:
         with self._lock:
@@ -125,13 +130,15 @@ class DownloadManifest:
                 "sha256": sha256,
                 "downloaded_at": time.strftime("%Y-%m-%d %H:%M:%S"),
             }
-            self._save()
+            if self._autosave:
+                self._save()
 
     def remove(self, slug: str) -> None:
         with self._lock:
             if slug in self._data:
                 del self._data[slug]
-                self._save()
+                if self._autosave:
+                    self._save()
 
     def count(self) -> int:
         with self._lock:
