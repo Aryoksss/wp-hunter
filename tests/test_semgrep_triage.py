@@ -18,6 +18,7 @@ from unittest.mock import patch
 import requests
 from typer.testing import CliRunner
 
+import wp_hunter
 from wp_hunter import core as hunter
 from wp_hunter import (
     downloader,
@@ -1227,7 +1228,7 @@ class CliAndRuleTests(unittest.TestCase):
     def test_installed_cli_exposes_version(self):
         result = CliRunner().invoke(app, ["--version"])
         self.assertEqual(result.exit_code, 0)
-        self.assertIn("wp-hunter 2.0.0", result.output)
+        self.assertIn(f"wp-hunter {wp_hunter.__version__}", result.output)
 
     def test_top_level_help_exposes_v2_commands(self):
         result = CliRunner().invoke(app, ["--help"])
