@@ -18,7 +18,7 @@ from unittest.mock import patch
 from typer.testing import CliRunner
 
 from wp_hunter import core as hunter
-from wp_hunter import downloader, semgrep_adapter, semgrep_locate, sources, triage
+from wp_hunter import downloader, http, semgrep_adapter, semgrep_locate, sources, triage
 from wp_hunter.cli import app
 from wp_hunter.config import (
     BUILTIN_PRESETS,
@@ -764,7 +764,7 @@ class CollectionTests(unittest.TestCase):
             return pages[kwargs["page"]]
 
         with (
-            patch.object(sources, "query_plugins_page", side_effect=query),
+            patch.object(http, "query_plugins_page", side_effect=query),
             contextlib.redirect_stdout(io.StringIO()),
         ):
             results = sources.collect_plugins(
@@ -792,7 +792,7 @@ class CollectionTests(unittest.TestCase):
 
         output = io.StringIO()
         with (
-            patch.object(sources, "query_plugins_page", side_effect=query),
+            patch.object(http, "query_plugins_page", side_effect=query),
             contextlib.redirect_stdout(output),
         ):
             results = sources.collect_plugins(
@@ -821,7 +821,7 @@ class CollectionTests(unittest.TestCase):
             "plugins": [self.plugin("below", 1000)],
         }
         with (
-            patch.object(sources, "query_plugins_page", return_value=first) as query,
+            patch.object(http, "query_plugins_page", return_value=first) as query,
             contextlib.redirect_stdout(io.StringIO()),
             contextlib.redirect_stderr(io.StringIO()),
         ):
@@ -854,9 +854,9 @@ class CollectionTests(unittest.TestCase):
         }
         theme_info = self.plugin("fixture-theme", 5000)
         with (
-            patch.object(sources, "_patchstack_page", return_value=first),
-            patch.object(sources, "_fetch_wporg_theme_info", return_value=theme_info) as themes,
-            patch.object(sources, "_fetch_wporg_plugin_info") as plugins,
+            patch.object(http, "_patchstack_page", return_value=first),
+            patch.object(http, "_fetch_wporg_theme_info", return_value=theme_info) as themes,
+            patch.object(http, "_fetch_wporg_plugin_info") as plugins,
             contextlib.redirect_stdout(io.StringIO()),
         ):
             results = sources.collect_patchstack_plugins(
@@ -870,17 +870,17 @@ class CollectionTests(unittest.TestCase):
         plugins.assert_not_called()
 
     def test_wordpress_api_requests_are_start_rate_limited(self):
-        previous = sources._WPORG_LAST_REQUEST_AT
-        sources._WPORG_LAST_REQUEST_AT = 10.0
+        previous = http._WPORG_LAST_REQUEST_AT
+        http._WPORG_LAST_REQUEST_AT = 10.0
         try:
             with (
-                patch.object(sources.time, "monotonic", side_effect=[10.1, 10.4]),
-                patch.object(sources.time, "sleep") as sleep,
-                patch.object(sources.requests, "get", return_value="response") as get,
+                patch.object(http.time, "monotonic", side_effect=[10.1, 10.4]),
+                patch.object(http.time, "sleep") as sleep,
+                patch.object(http.requests, "get", return_value="response") as get,
             ):
-                response = sources._wporg_get("https://api.wordpress.org/example")
+                response = http._wporg_get("https://api.wordpress.org/example")
         finally:
-            sources._WPORG_LAST_REQUEST_AT = previous
+            http._WPORG_LAST_REQUEST_AT = previous
         self.assertEqual(response, "response")
         sleep.assert_called_once()
         self.assertAlmostEqual(sleep.call_args.args[0], 0.2)
