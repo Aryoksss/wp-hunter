@@ -4,17 +4,15 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 
-import questionary
 import typer
 from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 
-from . import __version__, core
+from . import __version__, cli_menu, core
 from .config import (
     BUILTIN_PRESETS,
     all_presets,
-    config_path,
     default_config,
     get_preset,
     load_config,
@@ -63,25 +61,6 @@ def _validate_date(value: str) -> str:
         return core._date_cli_value(value)
     except Exception as exc:
         raise typer.BadParameter("date must be YYYY, YYYY-MM, or YYYY-MM-DD") from exc
-
-
-def _validate_nonnegative_input(value: str) -> bool | str:
-    try:
-        return int(value.strip() or "0") >= 0 or tr("prompt.nonnegative_integer")
-    except ValueError:
-        return tr("prompt.nonnegative_integer")
-
-
-def _ask_download_limit(defaults: dict) -> int | None:
-    value = questionary.text(
-        tr("prompt.download_limit"),
-        default=str(defaults.get("download_limit", 0)),
-        validate=_validate_nonnegative_input,
-    ).ask()
-    if value is None:
-        raise typer.Exit()
-    limit = int(value.strip() or "0")
-    return limit or None
 
 
 @app.callback(invoke_without_command=True)
@@ -512,106 +491,14 @@ def config_reset(ctx: typer.Context, yes: bool = typer.Option(False, "--yes")) -
 
 
 def _interactive_menu(ctx: typer.Context) -> None:
-    state = _state(ctx)
-    path = config_path()
-    if not path.exists():
-        language = questionary.select(
-            "Language / Bahasa",
-            choices=[
-                questionary.Choice("English", "en"),
-                questionary.Choice("Bahasa Indonesia", "id"),
-            ],
-            default="en",
-        ).ask()
-        if language is None:
-            raise typer.Exit()
-        state.config["language"] = language
-        set_language(language)
-        save_config(state.config)
-    state.console.print(Panel.fit(f"[bold cyan]WP Hunter[/bold cyan]\n{tr('app.tagline')}"))
-    choices = [
-        questionary.Choice(tr("menu.wporg"), "wporg"),
-        questionary.Choice(tr("menu.patchstack"), "patchstack"),
-        questionary.Choice(tr("menu.scan"), "scan"),
-        questionary.Choice(tr("menu.status"), "status"),
-        questionary.Choice(tr("menu.doctor"), "doctor"),
-        questionary.Choice(tr("menu.settings"), "settings"),
-        questionary.Choice(tr("menu.exit"), "exit"),
-    ]
-    action = questionary.select(tr("menu.title"), choices=choices).ask()
-    if action in {None, "exit"}:
-        raise typer.Exit()
-    defaults = state.config.get("defaults", {})
-    if action == "wporg":
-        installs = questionary.text(tr("prompt.install_tier"), default="10K").ask() or "10K"
-        minimum = questionary.confirm(tr("prompt.minimum"), default=False).ask()
-        limit = _ask_download_limit(defaults)
-        preview = questionary.confirm(tr("prompt.preview"), default=False).ask()
-        _run_download(
-            ctx,
-            DownloadOptions(
-                source="wporg",
-                installs=installs,
-                installs_mode="minimum" if minimum else "exact",
-                pages=int(defaults.get("pages", 50)),
-                max_age_years=int(defaults.get("max_age_years", 2)),
-                workers=int(defaults.get("download_workers", 3)),
-                api_workers=int(defaults.get("api_workers", 5)),
-                limit=limit,
-                preview=bool(preview),
-            ),
-        )
-    elif action == "patchstack":
-        boost = questionary.text(tr("prompt.min_boost"), default="0").ask() or "0"
-        limit = _ask_download_limit(defaults)
-        preview = questionary.confirm(tr("prompt.preview"), default=False).ask()
-        _run_download(
-            ctx,
-            DownloadOptions(
-                source="patchstack",
-                min_boost=max(0, int(boost)),
-                max_age_years=int(defaults.get("max_age_years", 2)),
-                workers=int(defaults.get("download_workers", 3)),
-                api_workers=int(defaults.get("api_workers", 5)),
-                limit=limit,
-                preview=bool(preview),
-            ),
-        )
-    elif action == "scan":
-        root = questionary.path(tr("prompt.output_folder")).ask()
-        if root:
-            scan(
-                ctx,
-                root=root,
-                delete_no_findings=False,
-                workers=int(defaults.get("scan_workers", 2)),
-                timeout=int(defaults.get("scan_timeout", 120)),
-                mem_mb=int(defaults.get("scan_mem_mb", 1024)),
-                max_age_years=int(defaults.get("max_age_years", 2)),
-                since=None,
-                keep_extracted=False,
-                semgrep=None,
-                rules=None,
-                allow_unmarked=False,
-            )
-    elif action == "status":
-        status_command(ctx, root=None, all_roots=False)
-    elif action == "doctor":
-        doctor(ctx, semgrep=None, rules=None)
-    else:
-        language = questionary.select(
-            "Language / Bahasa",
-            choices=[
-                questionary.Choice("English", "en"),
-                questionary.Choice("Bahasa Indonesia", "id"),
-            ],
-            default=str(state.config.get("language", "en")),
-        ).ask()
-        if language:
-            state.config["language"] = language
-            set_language(language)
-            save_config(state.config)
-            state.console.print(f"[green]{tr('common.language_saved')}[/green]")
+    cli_menu.interactive_menu(
+        ctx,
+        _state(ctx),
+        run_download=_run_download,
+        scan_command=scan,
+        status_command=status_command,
+        doctor_command=doctor,
+    )
 
 
 def run() -> None:

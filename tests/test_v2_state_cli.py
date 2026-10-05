@@ -100,13 +100,13 @@ class V2CliTests(unittest.TestCase):
             minimum = SimpleNamespace(ask=lambda: False)
             preview = SimpleNamespace(ask=lambda: True)
             with (
-                patch("wp_hunter.cli.questionary.select", return_value=selection),
+                patch("wp_hunter.cli_menu.questionary.select", return_value=selection),
                 patch(
-                    "wp_hunter.cli.questionary.text",
+                    "wp_hunter.cli_menu.questionary.text",
                     side_effect=[install_tier, download_limit],
                 ),
                 patch(
-                    "wp_hunter.cli.questionary.confirm",
+                    "wp_hunter.cli_menu.questionary.confirm",
                     side_effect=[minimum, preview],
                 ),
                 patch("wp_hunter.cli._run_download") as run_download,
@@ -206,7 +206,7 @@ class V2CliTests(unittest.TestCase):
         second = SimpleNamespace(ask=lambda: "exit")
         with (
             tempfile.TemporaryDirectory() as temp_name,
-            patch("wp_hunter.cli.questionary.select", side_effect=[first, second]),
+            patch("wp_hunter.cli_menu.questionary.select", side_effect=[first, second]),
         ):
             result = CliRunner().invoke(app, [], env={"WP_HUNTER_CONFIG_DIR": temp_name})
             config = load_config(Path(temp_name) / "config.json")
