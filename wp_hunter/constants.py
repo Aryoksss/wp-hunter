@@ -28,4 +28,5 @@ SEMGREP_RULES_DEFAULT = Path(__file__).parent / "resources" / "wordpress-triage.
 # the console codepage is cp1252 or output is piped to a file.
 for _stream in (sys.stdout, sys.stderr):
     with suppress(AttributeError, ValueError):
-        _stream.reconfigure(encoding="utf-8", errors="replace")
+        if hasattr(_stream, "reconfigure"):
+            _stream.reconfigure(encoding="utf-8", errors="replace")

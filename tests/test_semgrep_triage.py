@@ -659,6 +659,62 @@ class TriageSafetyTests(unittest.TestCase):
             self.assertIn("Semgrep Triage Report", report.read_text(encoding="utf-8"))
 
 
+class RemoveDirectoryTests(unittest.TestCase):
+    def setUp(self):
+        self._root = tempfile.TemporaryDirectory()
+        self.root = Path(self._root.name)
+
+    def tearDown(self):
+        self._root.cleanup()
+
+    def _target(self) -> Path:
+        target = self.root / "target"
+        target.mkdir()
+        (target / "plugin.php").write_text("<?php", encoding="utf-8")
+        return target
+
+    def test_removes_verified_directory(self):
+        target = self._target()
+        info = target.stat()
+        paths.remove_directory(target, self.root, (info.st_dev, info.st_ino))
+        self.assertFalse(target.exists())
+
+    def test_rejects_identity_mismatch(self):
+        target = self._target()
+        with self.assertRaises(ValueError):
+            paths.remove_directory(target, self.root, (0, 0))
+        self.assertTrue(target.is_dir())
+
+    @unittest.skipUnless(hasattr(os, "symlink"), "symlinks are unavailable")
+    def test_symlink_swapped_for_target_is_never_followed(self):
+        target = self._target()
+        info = target.stat()
+        victim = self.root / "victim"
+        victim.mkdir()
+        (victim / "keep.php").write_text("<?php", encoding="utf-8")
+        shutil.rmtree(target)
+        os.symlink(victim, target, target_is_directory=True)
+        with self.assertRaises(ValueError):
+            paths.remove_directory(target, self.root, (info.st_dev, info.st_ino))
+        self.assertTrue((victim / "keep.php").is_file())
+
+    def test_python310_fallback_removes_verified_directory(self):
+        target = self._target()
+        info = target.stat()
+        with patch.object(paths.sys, "version_info", (3, 10)):
+            paths.remove_directory(target, self.root, (info.st_dev, info.st_ino))
+        self.assertFalse(target.exists())
+
+    def test_python310_fallback_still_rejects_identity_mismatch(self):
+        target = self._target()
+        with (
+            patch.object(paths.sys, "version_info", (3, 10)),
+            self.assertRaises(ValueError),
+        ):
+            paths.remove_directory(target, self.root, (0, 0))
+        self.assertTrue(target.is_dir())
+
+
 class RootSafetyTests(unittest.TestCase):
     def test_nonempty_root_requires_explicit_adoption(self):
         with tempfile.TemporaryDirectory() as temp_name:
@@ -1143,7 +1199,9 @@ class DownloadAndExportTests(unittest.TestCase):
 
             with (
                 patch.object(downloader, "ProgressBar"),
-                patch.object(downloader, "download_plugin", return_value=(True, "interrupt-plugin", "OK")),
+                patch.object(
+                    downloader, "download_plugin", return_value=(True, "interrupt-plugin", "OK")
+                ),
                 patch.object(downloader, "as_completed", side_effect=interrupt),
                 patch.object(DownloadManifest, "save") as save,
                 contextlib.redirect_stdout(io.StringIO()),

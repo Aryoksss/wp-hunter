@@ -8,6 +8,7 @@ from pathlib import Path
 from ..archive import ensure_extracted as _ensure_extracted
 from ..core import _directory_identity
 from ..dates import plugin_last_updated as _plugin_last_updated_dt
+from ..mappings import as_dict
 from ..semgrep_adapter import SemgrepEngine
 
 IN_SCOPE_TIERS = {
@@ -51,8 +52,8 @@ def classify(results: list) -> tuple[dict, dict, int]:
         if not isinstance(r, dict):
             in_scope += 1  # Unknown scanner output must never trigger deletion.
             continue
-        extra = r.get("extra") if isinstance(r.get("extra"), dict) else {}
-        context = extra.get("context") if isinstance(extra.get("context"), dict) else {}
+        extra = as_dict(r.get("extra"))
+        context = as_dict(extra.get("context"))
         access = context.get("access", "") or ""
         access = str(access).lower().strip()
         check = str(r.get("check_id", "?"))

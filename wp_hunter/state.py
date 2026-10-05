@@ -5,8 +5,10 @@ import re
 import threading
 import time
 import zipfile
+from collections.abc import Mapping
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 from .fsutil import atomic_write_json as _atomic_write_json
 from .fsutil import sha256_of_file as _sha256_of_file
@@ -178,7 +180,7 @@ class ReviewLedger:
             }
             self._save()
 
-    def covers(self, plugin: dict) -> bool:
+    def covers(self, plugin: Mapping[str, Any]) -> bool:
         slug = plugin.get("slug", "")
         if not _is_safe_slug(slug):
             return False

@@ -339,7 +339,8 @@ def run_triage(
         "(outdated, unknown date, no source, or scan failed)"
     )
     if len(outdated):
-        print(f"    Outdated/skipped : {len(outdated)}  (updated before {cutoff_dt.date()})")
+        cutoff_label = cutoff_dt.date() if cutoff_dt else "N/A"
+        print(f"    Outdated/skipped : {len(outdated)}  (updated before {cutoff_label})")
     print(f"    {action_label:<18}: {len(action_names)}")
     if deletion_failures:
         print(f"    Deletion failures : {len(deletion_failures)}")

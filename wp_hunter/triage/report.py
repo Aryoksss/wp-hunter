@@ -7,6 +7,7 @@ from ..core import _display_text
 from ..fsutil import atomic_text_file as _atomic_text_file
 from ..fsutil import atomic_write_json as _atomic_write_json
 from ..fsutil import atomic_write_text as _atomic_write_text
+from ..mappings import as_dict
 from ..triage_schema import (
     CANDIDATES_FILE,
     DELETED_FILE,
@@ -38,8 +39,8 @@ def fmt_finding(finding: dict) -> str:
     category = _display_text(finding.get("category", "unknown"), 60) or "unknown"
     confidence = _display_text(finding.get("confidence", "unknown"), 30) or "unknown"
     access = "unknown"
-    extra = finding.get("extra") if isinstance(finding.get("extra"), dict) else {}
-    context = extra.get("context") if isinstance(extra.get("context"), dict) else {}
+    extra = as_dict(finding.get("extra"))
+    context = as_dict(extra.get("context"))
     if context.get("access"):
         access = _display_text(context["access"], 40)
     message = _display_text(finding.get("message", ""), 240)
@@ -179,10 +180,11 @@ def write_report(
             fh.write("\n")
 
         if outdated:
+            cutoff_label = cutoff_dt.date() if cutoff_dt else "N/A"
             fh.write(
                 local(
-                    f"SKIPPED — OUTDATED (last_updated before {cutoff_dt.date()}):\n",
-                    f"DILEWATI — USANG (last_updated sebelum {cutoff_dt.date()}):\n",
+                    f"SKIPPED — OUTDATED (last_updated before {cutoff_label}):\n",
+                    f"DILEWATI — USANG (last_updated sebelum {cutoff_label}):\n",
                 )
             )
             fh.write("-" * 70 + "\n")

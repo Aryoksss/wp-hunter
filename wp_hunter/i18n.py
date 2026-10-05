@@ -3,9 +3,11 @@ from __future__ import annotations
 import json
 from functools import lru_cache
 from importlib.resources import files
+from typing import Literal, cast
 
+Language = Literal["en", "id"]
 SUPPORTED_LANGUAGES = {"en", "id"}
-_language = "en"
+_language: Language = "en"
 
 
 @lru_cache(maxsize=2)
@@ -18,10 +20,10 @@ def set_language(language: str) -> None:
     if language not in SUPPORTED_LANGUAGES:
         raise ValueError(f"Unsupported language: {language}")
     global _language
-    _language = language
+    _language = cast(Language, language)
 
 
-def get_language() -> str:
+def get_language() -> Language:
     return _language
 
 

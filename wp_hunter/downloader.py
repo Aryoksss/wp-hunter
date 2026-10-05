@@ -5,8 +5,10 @@ import sys
 import tempfile
 import time
 import zipfile
+from collections.abc import Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
+from typing import Any
 from urllib.parse import urljoin
 
 from . import httpclient
@@ -98,7 +100,7 @@ def _open_safe_download(download_url: str):
 
 def _persist_download_state(
     plugin_dir: Path,
-    plugin: dict,
+    plugin: Mapping[str, Any],
     filename: str,
     archive_path: Path,
     sha256: str,
@@ -149,7 +151,7 @@ def build_global_slug_index(base_dir: str | None) -> set[str]:
 
 
 def download_plugin(
-    plugin: dict,
+    plugin: Mapping[str, Any],
     output_dir: str,
     skip_existing: bool = True,
     manifest: DownloadManifest | None = None,
@@ -290,7 +292,7 @@ def download_plugin(
 
 
 def download_all(
-    plugins: list[dict],
+    plugins: Sequence[Mapping[str, Any]],
     output_dir: str,
     max_workers: int = 3,
     skip_existing: bool = True,

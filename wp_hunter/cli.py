@@ -24,6 +24,7 @@ from .i18n import get_language, set_language, tr
 from .models import DownloadOptions, ScanOptions
 from .services import DownloadResult, execute_download, execute_scan
 from .status import inspect_root
+from .validation import as_browse_mode
 
 app = typer.Typer(
     name="wp-hunter",
@@ -191,7 +192,8 @@ def download_wporg(
     ),
     replace_preset: bool = typer.Option(False, help="Replace an existing user preset."),
 ) -> None:
-    if browse not in {"popular", "new", "updated", "top-rated"}:
+    browse_mode = as_browse_mode(browse)
+    if browse_mode is None:
         raise typer.BadParameter("--browse must be popular, new, updated, or top-rated")
     if since:
         _validate_date(since)
@@ -201,7 +203,7 @@ def download_wporg(
             source="wporg",
             installs=installs,
             installs_mode="minimum" if minimum else "exact",
-            browse=browse,
+            browse=browse_mode,
             pages=pages,
             search=search,
             tag=tag,

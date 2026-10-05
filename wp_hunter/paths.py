@@ -4,6 +4,7 @@ import os
 import re
 import shutil
 import stat
+import sys
 from pathlib import Path
 
 from .constants import (
@@ -200,6 +201,15 @@ def remove_directory(
             raise UnsafePathError("deletion target disappeared before removal") from exc
         if (details.st_dev, details.st_ino) != expected_identity:
             raise UnsafePathError("deletion target changed before removal")
-        shutil.rmtree(name, dir_fd=parent_fd)
+        if sys.version_info >= (3, 11):
+            # rmtree walks by fd, so the verified parent cannot be swapped mid-delete.
+            shutil.rmtree(name, dir_fd=parent_fd)
+        else:
+            # Python 3.10 lacks dir_fd support in rmtree; re-verify via the parent fd.
+            target = os.path.realpath(str(parent)) + os.sep + name
+            current = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+            if (current.st_dev, current.st_ino) != expected_identity:
+                raise UnsafePathError("deletion target changed before removal")
+            shutil.rmtree(target)
     finally:
         os.close(parent_fd)

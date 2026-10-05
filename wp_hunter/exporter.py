@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import csv
+from collections.abc import Mapping, Sequence
 from pathlib import Path
+from typing import Any
 
 from .core import _display_text
 from .fsutil import atomic_text_file as _atomic_text_file
@@ -22,7 +24,7 @@ def _csv_safe(value: object) -> object:
 
 
 def export_results(
-    plugins: list[dict], output_dir: str, target_installs: int
+    plugins: Sequence[Mapping[str, Any]], output_dir: str, target_installs: int
 ) -> tuple[Path, Path]:
     Path(output_dir).mkdir(parents=True, exist_ok=True)
     base_name = f"plugins_{format_installs(target_installs).replace('+', '')}"
@@ -58,7 +60,9 @@ def export_results(
     return json_path, csv_path
 
 
-def export_patchstack_results(plugins: list[dict], output_dir: str) -> tuple[Path, Path]:
+def export_patchstack_results(
+    plugins: Sequence[Mapping[str, Any]], output_dir: str
+) -> tuple[Path, Path]:
     Path(output_dir).mkdir(parents=True, exist_ok=True)
     json_path = Path(output_dir) / "patchstack_targets.json"
     _atomic_write_json(json_path, [dict(plugin) for plugin in plugins])
@@ -86,7 +90,7 @@ def export_patchstack_results(plugins: list[dict], output_dir: str) -> tuple[Pat
     return json_path, csv_path
 
 
-def print_summary_table(plugins: list[dict], quiet: bool = False) -> None:
+def print_summary_table(plugins: Sequence[Mapping[str, Any]], quiet: bool = False) -> None:
     if quiet:
         print(f"  Plugins collected: {len(plugins)}  (use without --quiet to see the full list)")
         return

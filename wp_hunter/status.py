@@ -4,6 +4,7 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 
+from .mappings import as_dict
 from .migration import migrate_triage_result
 from .state import DownloadManifest, ReviewLedger
 from .triage_schema import RESULTS_FILE
@@ -43,7 +44,7 @@ def inspect_root(value: str | Path) -> RootStatus:
         except json.JSONDecodeError as exc:
             raise ValueError(f"Triage result contains invalid JSON: {triage_path}") from exc
         if isinstance(triage, dict):
-            summary = triage.get("summary") if isinstance(triage.get("summary"), dict) else triage
+            summary = as_dict(triage.get("summary")) or triage
             candidates = int(summary.get("candidate_count", 0) or 0)
             errors = int(
                 summary.get("scan_error_count", summary.get("deletion_failure_count", 0)) or 0

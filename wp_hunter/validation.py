@@ -2,10 +2,18 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
+from typing import Literal, cast
 from urllib.parse import urlsplit
 
 from .constants import ALLOWED_DOWNLOAD_HOST_SUFFIX
 from .safe_names import is_safe_filename as _is_safe_filename
+
+BROWSE_MODES: tuple[str, ...] = ("popular", "new", "updated", "top-rated")
+BrowseMode = Literal["popular", "new", "updated", "top-rated"]
+
+
+def as_browse_mode(value: str) -> BrowseMode | None:
+    return cast(BrowseMode, value) if value in BROWSE_MODES else None
 
 
 def remote_nonnegative_int(
@@ -13,6 +21,8 @@ def remote_nonnegative_int(
     default: int = 0,
     maximum: int = 1_000_000_000,
 ) -> int:
+    if not isinstance(value, (int, float, str, bytes)):
+        return default
     try:
         parsed = int(value)
     except (TypeError, ValueError, OverflowError):

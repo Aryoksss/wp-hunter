@@ -17,6 +17,7 @@ from .safe_names import is_safe_slug as _is_safe_slug
 def _get(url: str, **kwargs):
     return httpclient.get(url, **kwargs)
 
+
 PATCHSTACK_VDP_API = "https://vdp.patchstack.com/api/database/vdp"
 WP_PLUGIN_INFO_API = "https://api.wordpress.org/plugins/info/1.2/"
 WP_THEME_INFO_API = "https://api.wordpress.org/themes/info/1.2/"
