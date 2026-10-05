@@ -81,6 +81,9 @@ temp_*/
 # Kiro IDE
 .kiro/
 
+# Agent tooling
+.omo/
+
 # Large folders
 AAA/
 BBPress/
