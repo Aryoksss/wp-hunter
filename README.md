@@ -190,6 +190,17 @@ adaptation, path/security helpers, download and export, and source collectors
 under a shared pooled HTTP client. Comments are intentionally limited to public
 contracts and non-obvious security rationale.
 
+### Releasing
+
+Run the release script from a clean `main` checkout. It runs every gate, bumps
+the version everywhere (including the wheel URL in both READMEs), builds the
+wheel and sdist, then commits, tags, pushes, and opens the GitHub release with
+the artifacts attached.
+
+```bash
+scripts/release.sh 2.2.0
+```
+
 ## License
 
 [MIT](LICENSE)

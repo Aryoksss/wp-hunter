@@ -172,6 +172,17 @@ path/keamanan, download dan export, dan kolektor sumber di atas HTTP client
 terpool. Komentar sengaja dibatasi pada kontrak publik dan alasan keamanan yang
 tidak jelas dari kodenya.
 
+### Rilis
+
+Jalankan skrip rilis dari checkout `main` yang bersih. Skrip menjalankan semua
+gate, menaikkan versi di semua tempat (termasuk URL wheel di kedua README),
+membangun wheel dan sdist, lalu commit, tag, push, dan membuka rilis GitHub
+dengan artifact terlampir.
+
+```bash
+scripts/release.sh 2.2.0
+```
+
 ## Lisensi
 
 [MIT](LICENSE)
