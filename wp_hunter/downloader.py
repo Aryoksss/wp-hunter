@@ -8,8 +8,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from urllib.parse import urljoin
 
-import requests
-
+from . import httpclient
 from .archive import validate_zip_members as _validate_zip_members
 from .core import (
     DOWNLOAD_MAX_RETRIES,
@@ -77,7 +76,7 @@ def _open_safe_download(download_url: str):
     for redirect_count in range(MAX_DOWNLOAD_REDIRECTS + 1):
         if not _safe_download_url(current_url):
             raise ValueError("redirected to a non-WordPress HTTPS URL")
-        response = requests.get(
+        response = httpclient.get(
             current_url,
             timeout=(15, 60),
             stream=True,

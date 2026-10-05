@@ -15,10 +15,11 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import requests
 from typer.testing import CliRunner
 
 from wp_hunter import core as hunter
-from wp_hunter import downloader, http, semgrep_adapter, semgrep_locate, sources, triage
+from wp_hunter import downloader, http, httpclient, semgrep_adapter, semgrep_locate, sources, triage
 from wp_hunter.cli import app
 from wp_hunter.config import (
     BUILTIN_PRESETS,
@@ -68,7 +69,7 @@ class FakeResponse:
 
     def raise_for_status(self):
         if self.status_code >= 400:
-            raise downloader.requests.exceptions.HTTPError(str(self.status_code))
+            raise requests.exceptions.HTTPError(str(self.status_code))
 
     def iter_content(self, chunk_size=8192):
         for offset in range(0, len(self.body), chunk_size):
@@ -876,7 +877,7 @@ class CollectionTests(unittest.TestCase):
             with (
                 patch.object(http.time, "monotonic", side_effect=[10.1, 10.4]),
                 patch.object(http.time, "sleep") as sleep,
-                patch.object(http.requests, "get", return_value="response") as get,
+                patch.object(httpclient, "get", return_value="response") as get,
             ):
                 response = http._wporg_get("https://api.wordpress.org/example")
         finally:
@@ -908,7 +909,7 @@ class DownloadAndExportTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_name:
             root = hunter._ensure_hunter_root(temp_name)
             response = FakeResponse(payload, headers={"Content-Length": str(len(payload))})
-            with patch.object(downloader.requests, "get", return_value=response):
+            with patch.object(httpclient, "get", return_value=response):
                 ok, slug, message = downloader.download_plugin(plugin, str(root))
             archive = root / slug / f"{slug}.zip"
             self.assertTrue(ok, message)
@@ -927,7 +928,7 @@ class DownloadAndExportTests(unittest.TestCase):
             plugin_dir.mkdir()
             archive = plugin_dir / "fixture-plugin.zip"
             archive.write_bytes(old_payload)
-            with patch.object(downloader.requests, "get", return_value=FakeResponse(new_payload)):
+            with patch.object(httpclient, "get", return_value=FakeResponse(new_payload)):
                 ok, _slug, message = downloader.download_plugin(plugin, str(root))
             self.assertTrue(ok, message)
             self.assertEqual(archive.read_bytes(), new_payload)
@@ -946,7 +947,7 @@ class DownloadAndExportTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_name:
             root = hunter._ensure_hunter_root(temp_name)
             with (
-                patch.object(downloader.requests, "get", side_effect=redirect) as get,
+                patch.object(httpclient, "get", side_effect=redirect) as get,
                 patch.object(downloader.time, "sleep"),
             ):
                 ok, _slug, message = downloader.download_plugin(plugin, str(root))

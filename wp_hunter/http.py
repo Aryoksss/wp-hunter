@@ -6,11 +6,16 @@ import time
 
 import requests
 
+from . import httpclient
 from .constants import (
     API_RATE_LIMIT_SEC,
     API_URL,
 )
 from .safe_names import is_safe_slug as _is_safe_slug
+
+
+def _get(url: str, **kwargs):
+    return httpclient.get(url, **kwargs)
 
 PATCHSTACK_VDP_API = "https://vdp.patchstack.com/api/database/vdp"
 WP_PLUGIN_INFO_API = "https://api.wordpress.org/plugins/info/1.2/"
@@ -28,7 +33,7 @@ def _wporg_get(url: str, **kwargs):
         if wait > 0:
             time.sleep(wait)
         _WPORG_LAST_REQUEST_AT = time.monotonic()
-    return requests.get(url, **kwargs)
+    return _get(url, **kwargs)
 
 
 def _build_api_params(
@@ -127,7 +132,7 @@ def _patchstack_page(page: int, retries: int = 3) -> dict | None:
     headers = {"Accept": "application/json", "User-Agent": "Mozilla/5.0"}
     for attempt in range(1, retries + 1):
         try:
-            resp = requests.get(PATCHSTACK_VDP_API, params=params, headers=headers, timeout=25)
+            resp = _get(PATCHSTACK_VDP_API, params=params, headers=headers, timeout=25)
             resp.raise_for_status()
             data = resp.json()
             return data if isinstance(data, dict) else None
