@@ -15,10 +15,20 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import requests
 from typer.testing import CliRunner
 
 from wp_hunter import core as hunter
-from wp_hunter import downloader, semgrep_adapter, sources, triage
+from wp_hunter import (
+    downloader,
+    http,
+    httpclient,
+    paths,
+    semgrep_adapter,
+    semgrep_locate,
+    sources,
+    triage,
+)
 from wp_hunter.cli import app
 from wp_hunter.config import (
     BUILTIN_PRESETS,
@@ -68,7 +78,7 @@ class FakeResponse:
 
     def raise_for_status(self):
         if self.status_code >= 400:
-            raise downloader.requests.exceptions.HTTPError(str(self.status_code))
+            raise requests.exceptions.HTTPError(str(self.status_code))
 
     def iter_content(self, chunk_size=8192):
         for offset in range(0, len(self.body), chunk_size):
@@ -241,7 +251,7 @@ class SemgrepAdapterTests(unittest.TestCase):
         self.assertEqual(results[0]["extra"]["context"]["access"], "unknown")
 
     def test_find_semgrep_does_not_install(self):
-        with patch.object(hunter.shutil, "which", return_value=None):
+        with patch.object(semgrep_locate.shutil, "which", return_value=None):
             self.assertIsNone(hunter._find_semgrep(None))
 
 
@@ -258,7 +268,7 @@ class TriageSafetyTests(unittest.TestCase):
                 scan=lambda *_args: ([], "OK"),
             )
             with (
-                patch.object(triage, "SemgrepEngine", return_value=engine),
+                patch.object(triage.runner, "SemgrepEngine", return_value=engine),
                 contextlib.redirect_stdout(io.StringIO()),
             ):
                 triage.run_triage(
@@ -312,7 +322,7 @@ class TriageSafetyTests(unittest.TestCase):
             fake_engine.scan = scan
             output = io.StringIO()
             with (
-                patch.object(triage, "SemgrepEngine", return_value=fake_engine),
+                patch.object(triage.runner, "SemgrepEngine", return_value=fake_engine),
                 contextlib.redirect_stdout(output),
             ):
                 triage.run_triage(
@@ -366,8 +376,8 @@ class TriageSafetyTests(unittest.TestCase):
 
             engine.scan = scan
             with (
-                patch.object(triage, "SemgrepEngine", return_value=engine),
-                patch.object(triage, "_ask_choice", return_value="yes"),
+                patch.object(triage.runner, "SemgrepEngine", return_value=engine),
+                patch.object(triage.runner, "_ask_choice", return_value="yes"),
                 contextlib.redirect_stdout(io.StringIO()),
             ):
                 triage.run_triage(
@@ -408,8 +418,8 @@ class TriageSafetyTests(unittest.TestCase):
             )
             ledger = ReviewLedger(root)
             with (
-                patch.object(triage, "SemgrepEngine", return_value=engine),
-                patch.object(triage, "_ask_choice", return_value="yes"),
+                patch.object(triage.runner, "SemgrepEngine", return_value=engine),
+                patch.object(triage.runner, "_ask_choice", return_value="yes"),
                 contextlib.redirect_stdout(io.StringIO()),
             ):
                 triage.run_triage(
@@ -439,7 +449,7 @@ class TriageSafetyTests(unittest.TestCase):
                 scan=lambda *_args: ([], "OK"),
             )
             with (
-                patch.object(triage, "SemgrepEngine", return_value=engine),
+                patch.object(triage.runner, "SemgrepEngine", return_value=engine),
                 contextlib.redirect_stdout(io.StringIO()),
             ):
                 triage.run_triage(
@@ -477,7 +487,7 @@ class TriageSafetyTests(unittest.TestCase):
 
             engine.scan = scan
             with (
-                patch.object(triage, "SemgrepEngine", return_value=engine),
+                patch.object(triage.runner, "SemgrepEngine", return_value=engine),
                 contextlib.redirect_stdout(io.StringIO()),
             ):
                 triage.run_triage(
@@ -508,14 +518,14 @@ class TriageSafetyTests(unittest.TestCase):
             real_rmtree = shutil.rmtree
 
             def fail_target(path, *args, **kwargs):
-                if Path(path) == plugin:
+                if Path(path) == plugin or Path(path).name == plugin.name:
                     raise OSError("simulated failure")
                 return real_rmtree(path, *args, **kwargs)
 
             with (
-                patch.object(triage, "SemgrepEngine", return_value=engine),
-                patch.object(triage, "_ask_choice", return_value="yes"),
-                patch.object(hunter.shutil, "rmtree", side_effect=fail_target),
+                patch.object(triage.runner, "SemgrepEngine", return_value=engine),
+                patch.object(triage.runner, "_ask_choice", return_value="yes"),
+                patch.object(paths.shutil, "rmtree", side_effect=fail_target),
                 contextlib.redirect_stdout(io.StringIO()),
                 contextlib.redirect_stderr(io.StringIO()),
             ):
@@ -553,8 +563,8 @@ class TriageSafetyTests(unittest.TestCase):
 
             engine.scan = replace_target
             with (
-                patch.object(triage, "SemgrepEngine", return_value=engine),
-                patch.object(triage, "_ask_choice", return_value="yes"),
+                patch.object(triage.runner, "SemgrepEngine", return_value=engine),
+                patch.object(triage.runner, "_ask_choice", return_value="yes"),
                 contextlib.redirect_stdout(io.StringIO()),
                 contextlib.redirect_stderr(io.StringIO()),
             ):
@@ -575,6 +585,46 @@ class TriageSafetyTests(unittest.TestCase):
             self.assertEqual(payload["summary"]["deletion_failure_count"], 1)
 
     @unittest.skipUnless(hasattr(os, "symlink"), "symlinks are unavailable")
+    def test_directory_swapped_for_symlink_after_scan_never_deletes_link_target(self):
+        with tempfile.TemporaryDirectory() as temp_name:
+            root = hunter._ensure_hunter_root(temp_name)
+            plugin = root / "swap-plugin"
+            moved = root / "swap-plugin-original"
+            victim = root / "victim"
+            victim.mkdir()
+            (victim / "keep.php").write_text("<?php", encoding="utf-8")
+            plugin.mkdir()
+            (plugin / "plugin.php").write_text("<?php", encoding="utf-8")
+            engine = SimpleNamespace(executable="semgrep", rules_path=RULES)
+
+            def swap_target(_target, *_args):
+                plugin.rename(moved)
+                os.symlink(victim, plugin, target_is_directory=True)
+                return [], "OK"
+
+            engine.scan = swap_target
+            with (
+                patch.object(triage.runner, "SemgrepEngine", return_value=engine),
+                patch.object(triage.runner, "_ask_choice", return_value="yes"),
+                contextlib.redirect_stdout(io.StringIO()),
+                contextlib.redirect_stderr(io.StringIO()),
+            ):
+                triage.run_triage(
+                    str(root),
+                    "semgrep",
+                    RULES,
+                    workers=1,
+                    timeout=5,
+                    mem_mb=128,
+                    dry_run=False,
+                    max_age_years=0,
+                )
+            self.assertTrue(victim.is_dir())
+            self.assertTrue((victim / "keep.php").is_file())
+            payload = json.loads((root / "triage_results.json").read_text(encoding="utf-8"))
+            self.assertEqual(payload["summary"]["deleted_count"], 0)
+
+    @unittest.skipUnless(hasattr(os, "symlink"), "symlinks are unavailable")
     def test_report_write_replaces_symlink_without_touching_target(self):
         with tempfile.TemporaryDirectory() as temp_name:
             root = hunter._ensure_hunter_root(temp_name)
@@ -591,7 +641,7 @@ class TriageSafetyTests(unittest.TestCase):
                 scan=lambda *_args: ([], "OK"),
             )
             with (
-                patch.object(triage, "SemgrepEngine", return_value=engine),
+                patch.object(triage.runner, "SemgrepEngine", return_value=engine),
                 contextlib.redirect_stdout(io.StringIO()),
             ):
                 triage.run_triage(
@@ -607,6 +657,73 @@ class TriageSafetyTests(unittest.TestCase):
             self.assertEqual(outside.read_text(encoding="utf-8"), "sentinel")
             self.assertFalse(report.is_symlink())
             self.assertIn("Semgrep Triage Report", report.read_text(encoding="utf-8"))
+
+
+class RemoveDirectoryTests(unittest.TestCase):
+    def setUp(self):
+        self._root = tempfile.TemporaryDirectory()
+        self.root = Path(self._root.name)
+
+    def tearDown(self):
+        self._root.cleanup()
+
+    def _target(self) -> Path:
+        target = self.root / "target"
+        target.mkdir()
+        (target / "plugin.php").write_text("<?php", encoding="utf-8")
+        return target
+
+    def test_removes_verified_directory(self):
+        target = self._target()
+        info = target.stat()
+        paths.remove_directory(target, self.root, (info.st_dev, info.st_ino))
+        self.assertFalse(target.exists())
+
+    def test_rejects_identity_mismatch(self):
+        target = self._target()
+        with self.assertRaises(ValueError):
+            paths.remove_directory(target, self.root, (0, 0))
+        self.assertTrue(target.is_dir())
+
+    @unittest.skipUnless(hasattr(os, "symlink"), "symlinks are unavailable")
+    def test_symlink_swapped_for_target_is_never_followed(self):
+        victim = self.root / "victim"
+        victim.mkdir()
+        (victim / "keep.php").write_text("<?php", encoding="utf-8")
+        target = self._target()
+        info = target.stat()
+        shutil.rmtree(target)
+        os.symlink(victim, target, target_is_directory=True)
+        with self.assertRaises((ValueError, OSError)):
+            paths.remove_directory(target, self.root, (info.st_dev, info.st_ino))
+        self.assertTrue((victim / "keep.php").is_file())
+        self.assertFalse((victim / "keep.php").is_symlink())
+
+    @unittest.skipUnless(hasattr(os, "symlink"), "symlinks are unavailable")
+    def test_symlink_is_rejected_by_identity_guard(self):
+        victim = self.root / "victim"
+        victim.mkdir()
+        target = self.root / "target"
+        os.symlink(victim, target, target_is_directory=True)
+        with self.assertRaises(ValueError):
+            paths.remove_directory(target, self.root, (0, 0))
+        self.assertTrue(victim.is_dir())
+
+    def test_python310_fallback_removes_verified_directory(self):
+        target = self._target()
+        info = target.stat()
+        with patch.object(paths.sys, "version_info", (3, 10)):
+            paths.remove_directory(target, self.root, (info.st_dev, info.st_ino))
+        self.assertFalse(target.exists())
+
+    def test_python310_fallback_still_rejects_identity_mismatch(self):
+        target = self._target()
+        with (
+            patch.object(paths.sys, "version_info", (3, 10)),
+            self.assertRaises(ValueError),
+        ):
+            paths.remove_directory(target, self.root, (0, 0))
+        self.assertTrue(target.is_dir())
 
 
 class RootSafetyTests(unittest.TestCase):
@@ -683,7 +800,7 @@ class RootSafetyTests(unittest.TestCase):
                 scan=lambda *_args: ([], "OK"),
             )
             with (
-                patch.object(triage, "SemgrepEngine", return_value=engine),
+                patch.object(triage.runner, "SemgrepEngine", return_value=engine),
                 contextlib.redirect_stdout(io.StringIO()),
                 contextlib.redirect_stderr(io.StringIO()),
             ):
@@ -704,7 +821,7 @@ class RootSafetyTests(unittest.TestCase):
             extracted.mkdir()
             (extracted / "plugin.php").write_text("<?php", encoding="utf-8")
             with (
-                patch.object(triage, "SemgrepEngine", return_value=engine),
+                patch.object(triage.runner, "SemgrepEngine", return_value=engine),
                 contextlib.redirect_stdout(io.StringIO()),
                 contextlib.redirect_stderr(io.StringIO()),
             ):
@@ -764,7 +881,7 @@ class CollectionTests(unittest.TestCase):
             return pages[kwargs["page"]]
 
         with (
-            patch.object(sources, "query_plugins_page", side_effect=query),
+            patch.object(http, "query_plugins_page", side_effect=query),
             contextlib.redirect_stdout(io.StringIO()),
         ):
             results = sources.collect_plugins(
@@ -792,7 +909,7 @@ class CollectionTests(unittest.TestCase):
 
         output = io.StringIO()
         with (
-            patch.object(sources, "query_plugins_page", side_effect=query),
+            patch.object(http, "query_plugins_page", side_effect=query),
             contextlib.redirect_stdout(output),
         ):
             results = sources.collect_plugins(
@@ -821,7 +938,7 @@ class CollectionTests(unittest.TestCase):
             "plugins": [self.plugin("below", 1000)],
         }
         with (
-            patch.object(sources, "query_plugins_page", return_value=first) as query,
+            patch.object(http, "query_plugins_page", return_value=first) as query,
             contextlib.redirect_stdout(io.StringIO()),
             contextlib.redirect_stderr(io.StringIO()),
         ):
@@ -854,9 +971,9 @@ class CollectionTests(unittest.TestCase):
         }
         theme_info = self.plugin("fixture-theme", 5000)
         with (
-            patch.object(sources, "_patchstack_page", return_value=first),
-            patch.object(sources, "_fetch_wporg_theme_info", return_value=theme_info) as themes,
-            patch.object(sources, "_fetch_wporg_plugin_info") as plugins,
+            patch.object(http, "_patchstack_page", return_value=first),
+            patch.object(http, "_fetch_wporg_theme_info", return_value=theme_info) as themes,
+            patch.object(http, "_fetch_wporg_plugin_info") as plugins,
             contextlib.redirect_stdout(io.StringIO()),
         ):
             results = sources.collect_patchstack_plugins(
@@ -870,17 +987,17 @@ class CollectionTests(unittest.TestCase):
         plugins.assert_not_called()
 
     def test_wordpress_api_requests_are_start_rate_limited(self):
-        previous = sources._WPORG_LAST_REQUEST_AT
-        sources._WPORG_LAST_REQUEST_AT = 10.0
+        previous = http._WPORG_LAST_REQUEST_AT
+        http._WPORG_LAST_REQUEST_AT = 10.0
         try:
             with (
-                patch.object(sources.time, "monotonic", side_effect=[10.1, 10.4]),
-                patch.object(sources.time, "sleep") as sleep,
-                patch.object(sources.requests, "get", return_value="response") as get,
+                patch.object(http.time, "monotonic", side_effect=[10.1, 10.4]),
+                patch.object(http.time, "sleep") as sleep,
+                patch.object(httpclient, "get", return_value="response") as get,
             ):
-                response = sources._wporg_get("https://api.wordpress.org/example")
+                response = http._wporg_get("https://api.wordpress.org/example")
         finally:
-            sources._WPORG_LAST_REQUEST_AT = previous
+            http._WPORG_LAST_REQUEST_AT = previous
         self.assertEqual(response, "response")
         sleep.assert_called_once()
         self.assertAlmostEqual(sleep.call_args.args[0], 0.2)
@@ -908,7 +1025,7 @@ class DownloadAndExportTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_name:
             root = hunter._ensure_hunter_root(temp_name)
             response = FakeResponse(payload, headers={"Content-Length": str(len(payload))})
-            with patch.object(downloader.requests, "get", return_value=response):
+            with patch.object(httpclient, "get", return_value=response):
                 ok, slug, message = downloader.download_plugin(plugin, str(root))
             archive = root / slug / f"{slug}.zip"
             self.assertTrue(ok, message)
@@ -927,7 +1044,7 @@ class DownloadAndExportTests(unittest.TestCase):
             plugin_dir.mkdir()
             archive = plugin_dir / "fixture-plugin.zip"
             archive.write_bytes(old_payload)
-            with patch.object(downloader.requests, "get", return_value=FakeResponse(new_payload)):
+            with patch.object(httpclient, "get", return_value=FakeResponse(new_payload)):
                 ok, _slug, message = downloader.download_plugin(plugin, str(root))
             self.assertTrue(ok, message)
             self.assertEqual(archive.read_bytes(), new_payload)
@@ -946,7 +1063,7 @@ class DownloadAndExportTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_name:
             root = hunter._ensure_hunter_root(temp_name)
             with (
-                patch.object(downloader.requests, "get", side_effect=redirect) as get,
+                patch.object(httpclient, "get", side_effect=redirect) as get,
                 patch.object(downloader.time, "sleep"),
             ):
                 ok, _slug, message = downloader.download_plugin(plugin, str(root))
@@ -1049,6 +1166,61 @@ class DownloadAndExportTests(unittest.TestCase):
         self.assertTrue(version_is_newer("2.0.0-beta2", "2.0.0-beta1"))
         self.assertFalse(version_is_newer("2.0.0-beta1", "2.0.0"))
         self.assertTrue(version_is_newer("1.10", "1.9"))
+
+    def test_batched_manifest_defers_disk_writes_until_save(self):
+        payload = zip_payload()
+        with tempfile.TemporaryDirectory() as temp_name:
+            root = hunter._ensure_hunter_root(temp_name)
+            manifest = DownloadManifest(root, autosave=False)
+            with patch("wp_hunter.state._atomic_write_json") as write:
+                for index in range(25):
+                    manifest.mark_downloaded(
+                        f"plugin-{index}",
+                        f"plugin-{index}.zip",
+                        len(payload) // 1024,
+                        "1.0.0",
+                        hashlib.sha256(payload).hexdigest(),
+                    )
+                write.assert_not_called()
+                manifest.save()
+                self.assertEqual(write.call_count, 1)
+
+    def test_autosave_manifest_writes_on_each_mark(self):
+        payload = zip_payload()
+        with tempfile.TemporaryDirectory() as temp_name:
+            root = hunter._ensure_hunter_root(temp_name)
+            manifest = DownloadManifest(root)
+            with patch("wp_hunter.state._atomic_write_json") as write:
+                manifest.mark_downloaded(
+                    "solo-plugin",
+                    "solo-plugin.zip",
+                    len(payload) // 1024,
+                    "1.0.0",
+                    hashlib.sha256(payload).hexdigest(),
+                )
+                self.assertEqual(write.call_count, 1)
+
+    def test_interrupted_batch_still_flushes_manifest_and_reraises(self):
+        plugins = [{"slug": "interrupt-plugin", "name": "Interrupt", "version": "1.0"}]
+        with tempfile.TemporaryDirectory() as temp_name:
+            root = hunter._ensure_hunter_root(temp_name)
+
+            def interrupt(_future):
+                raise KeyboardInterrupt()
+
+            with (
+                patch.object(downloader, "ProgressBar"),
+                patch.object(
+                    downloader, "download_plugin", return_value=(True, "interrupt-plugin", "OK")
+                ),
+                patch.object(downloader, "as_completed", side_effect=interrupt),
+                patch.object(DownloadManifest, "save") as save,
+                contextlib.redirect_stdout(io.StringIO()),
+                contextlib.redirect_stderr(io.StringIO()),
+                self.assertRaises(KeyboardInterrupt),
+            ):
+                downloader.download_all(plugins, str(root), max_workers=1)
+            save.assert_called_once()
 
 
 class CliAndRuleTests(unittest.TestCase):

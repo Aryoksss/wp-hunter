@@ -7,11 +7,10 @@ import subprocess
 import tempfile
 from pathlib import Path
 
+from .mappings import as_dict
+from .text import display_text as _display_text
+
 MAX_SEMGREP_JSON_BYTES = 64 * 1024 * 1024
-
-
-def _display_text(value: object) -> str:
-    return re.sub(r"[\x00-\x1f\x7f\x80-\x9f]", " ", str(value or ""))
 
 
 def decode_process_output(value: object, limit: int = 512) -> str:
@@ -137,20 +136,20 @@ def validate_semgrep_config(
 def _normalize_semgrep_result(raw: object) -> dict:
     if not isinstance(raw, dict):
         return {"check_id": "semgrep.unknown", "extra": {"context": {"access": "unknown"}}}
-    extra = raw.get("extra") if isinstance(raw.get("extra"), dict) else {}
-    metadata = extra.get("metadata") if isinstance(extra.get("metadata"), dict) else {}
-    triage = metadata.get("triage") if isinstance(metadata.get("triage"), dict) else {}
+    raw_extra = as_dict(raw.get("extra"))
+    metadata = as_dict(raw_extra.get("metadata"))
+    triage = as_dict(metadata.get("triage"))
     access = str(triage.get("access", "unknown") or "unknown").lower().strip()
     category = str(triage.get("category", "unknown") or "unknown").strip()
     confidence = str(triage.get("confidence", "unknown") or "unknown").strip()
-    start = raw.get("start") if isinstance(raw.get("start"), dict) else {}
-    end = raw.get("end") if isinstance(raw.get("end"), dict) else {}
+    start = as_dict(raw.get("start"))
+    end = as_dict(raw.get("end"))
     return {
         "check_id": str(raw.get("check_id", "semgrep.unknown") or "semgrep.unknown"),
         "file": str(raw.get("path", "") or ""),
         "line": start.get("line"),
         "end_line": end.get("line"),
-        "message": str(extra.get("message", "") or ""),
+        "message": str(raw_extra.get("message", "") or ""),
         "category": category,
         "confidence": confidence,
         "extra": {"context": {"access": access}, "metadata": metadata},
@@ -221,12 +220,11 @@ def run_semgrep_scan(
         return [], f"SCAN_ERR:{proc.returncode}{suffix}"
     if output_size > MAX_SEMGREP_JSON_BYTES:
         return [], "OUTPUT_TOO_LARGE"
-    if isinstance(stdout, bytes):
-        stdout = stdout.decode("utf-8", errors="replace")
-    if not isinstance(stdout, str) or not stdout.strip():
+    stdout_text = stdout.decode("utf-8", errors="replace") if isinstance(stdout, bytes) else stdout
+    if not isinstance(stdout_text, str) or not stdout_text.strip():
         return [], "INVALID_OUTPUT"
     try:
-        data = json.loads(stdout)
+        data = json.loads(stdout_text)
     except (TypeError, json.JSONDecodeError):
         return [], "INVALID_OUTPUT"
     if not isinstance(data, dict) or not isinstance(data.get("results"), list):

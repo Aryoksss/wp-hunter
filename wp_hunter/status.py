@@ -4,8 +4,10 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 
+from .mappings import as_dict
 from .migration import migrate_triage_result
 from .state import DownloadManifest, ReviewLedger
+from .triage_schema import RESULTS_FILE
 
 
 @dataclass(slots=True)
@@ -33,7 +35,7 @@ def inspect_root(value: str | Path) -> RootStatus:
     )
     candidates = errors = 0
     last_scan = ""
-    triage_path = root / "triage_results.json"
+    triage_path = root / RESULTS_FILE
     if triage_path.exists():
         if triage_path.is_symlink() or not triage_path.is_file():
             raise ValueError(f"Triage result is unsafe: {triage_path}")
@@ -42,7 +44,7 @@ def inspect_root(value: str | Path) -> RootStatus:
         except json.JSONDecodeError as exc:
             raise ValueError(f"Triage result contains invalid JSON: {triage_path}") from exc
         if isinstance(triage, dict):
-            summary = triage.get("summary") if isinstance(triage.get("summary"), dict) else triage
+            summary = as_dict(triage.get("summary")) or triage
             candidates = int(summary.get("candidate_count", 0) or 0)
             errors = int(
                 summary.get("scan_error_count", summary.get("deletion_failure_count", 0)) or 0

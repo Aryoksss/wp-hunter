@@ -1,17 +1,17 @@
 from __future__ import annotations
 
-import csv
-import hashlib
 import os
+import sys
 import tempfile
 import time
 import zipfile
+from collections.abc import Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
+from typing import Any
 from urllib.parse import urljoin
 
-import requests
-
+from . import httpclient
 from .archive import validate_zip_members as _validate_zip_members
 from .core import (
     DOWNLOAD_MAX_RETRIES,
@@ -19,36 +19,32 @@ from .core import (
     MAX_DOWNLOAD_REDIRECTS,
     ROOT_MARKER_FILE,
     ProgressBar,
-    _atomic_text_file,
-    _atomic_write_json,
-    _csv_safe,
-    _display_text,
     _ensure_hunter_root,
-    _is_safe_slug,
     _root_marker_state,
     _safe_download_filename,
     _safe_download_url,
-    format_installs,
 )
+from .exporter import (
+    export_patchstack_results,
+    export_results,
+    print_summary_table,
+)
+from .fsutil import atomic_write_json as _atomic_write_json
+from .fsutil import md5_of_file as _md5_of_file
+from .fsutil import sha256_of_file as _sha256_of_file
+from .safe_names import is_safe_slug as _is_safe_slug
 from .semgrep_adapter import decode_process_output as _decode_process_output
 from .state import DownloadManifest
 from .versioning import version_is_newer
 
-
-def _md5_of_file(path: Path) -> str:
-    h = hashlib.md5()
-    with open(path, "rb") as fh:
-        for chunk in iter(lambda: fh.read(65_536), b""):
-            h.update(chunk)
-    return h.hexdigest()
-
-
-def _sha256_of_file(path: Path) -> str:
-    h = hashlib.sha256()
-    with open(path, "rb") as fh:
-        for chunk in iter(lambda: fh.read(65_536), b""):
-            h.update(chunk)
-    return h.hexdigest()
+__all__ = [
+    "build_global_slug_index",
+    "download_all",
+    "download_plugin",
+    "export_patchstack_results",
+    "export_results",
+    "print_summary_table",
+]
 
 
 def _validate_download_archive(
@@ -83,7 +79,7 @@ def _open_safe_download(download_url: str):
     for redirect_count in range(MAX_DOWNLOAD_REDIRECTS + 1):
         if not _safe_download_url(current_url):
             raise ValueError("redirected to a non-WordPress HTTPS URL")
-        response = requests.get(
+        response = httpclient.get(
             current_url,
             timeout=(15, 60),
             stream=True,
@@ -104,7 +100,7 @@ def _open_safe_download(download_url: str):
 
 def _persist_download_state(
     plugin_dir: Path,
-    plugin: dict,
+    plugin: Mapping[str, Any],
     filename: str,
     archive_path: Path,
     sha256: str,
@@ -155,7 +151,7 @@ def build_global_slug_index(base_dir: str | None) -> set[str]:
 
 
 def download_plugin(
-    plugin: dict,
+    plugin: Mapping[str, Any],
     output_dir: str,
     skip_existing: bool = True,
     manifest: DownloadManifest | None = None,
@@ -296,7 +292,7 @@ def download_plugin(
 
 
 def download_all(
-    plugins: list[dict],
+    plugins: Sequence[Mapping[str, Any]],
     output_dir: str,
     max_workers: int = 3,
     skip_existing: bool = True,
@@ -308,7 +304,7 @@ def download_all(
     max_bytes = max(1, max_bytes)
     output_root = _ensure_hunter_root(output_dir)
     output_dir = str(output_root)
-    manifest = DownloadManifest(output_root)
+    manifest = DownloadManifest(output_root, autosave=False)
     already = sum(1 for p in plugins if skip_existing and manifest.is_downloaded(p["slug"]))
     to_download = len(plugins) - already
     print(f"\n{'=' * 60}")
@@ -326,134 +322,62 @@ def download_all(
         return
 
     success = updated = failed = skipped = 0
+    interrupted = False
     bar = ProgressBar(total=len(plugins), label="Downloading")
     bar.start()
 
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        futures = {
-            executor.submit(
-                download_plugin,
-                p,
-                output_dir,
-                skip_existing,
-                manifest,
-                update_check,
-                global_slugs,
-                max_bytes,
-            ): p
-            for p in plugins
-        }
-        for future in as_completed(futures):
-            try:
-                ok, slug, msg = future.result()
-            except Exception as exc:
-                plugin = futures[future]
-                ok = False
-                slug = str(plugin.get("slug", "unknown"))
-                msg = f"Worker crashed: {_decode_process_output(exc, 160)}"
-            msg_lower = msg.lower()
-            if ok:
-                if any(w in msg_lower for w in ("already", "up to date", "on disk", "dedup")):
-                    skipped += 1
-                    status = "SKIP"
-                elif update_check and "ok" in msg_lower:
-                    updated += 1
-                    status = " UPD"
+    try:
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = {
+                executor.submit(
+                    download_plugin,
+                    p,
+                    output_dir,
+                    skip_existing,
+                    manifest,
+                    update_check,
+                    global_slugs,
+                    max_bytes,
+                ): p
+                for p in plugins
+            }
+            for future in as_completed(futures):
+                try:
+                    ok, slug, msg = future.result()
+                except Exception as exc:
+                    plugin = futures[future]
+                    ok = False
+                    slug = str(plugin.get("slug", "unknown"))
+                    msg = f"Worker crashed: {_decode_process_output(exc, 160)}"
+                msg_lower = msg.lower()
+                if ok:
+                    if any(w in msg_lower for w in ("already", "up to date", "on disk", "dedup")):
+                        skipped += 1
+                        status = "SKIP"
+                    elif update_check and "ok" in msg_lower:
+                        updated += 1
+                        status = " UPD"
+                    else:
+                        success += 1
+                        status = " OK "
                 else:
-                    success += 1
-                    status = " OK "
-            else:
-                failed += 1
-                status = "FAIL"
-            bar.update(message=f"[{status}] {slug}")
+                    failed += 1
+                    status = "FAIL"
+                bar.update(message=f"[{status}] {slug}")
+    except KeyboardInterrupt:
+        interrupted = True
+        print("\n  [WARN] Interrupted — flushing download cache before exit.", file=sys.stderr)
+    finally:
+        manifest.save()
+        bar.finish()
 
-    bar.finish()
     print(
         f"\n  Results: {success} new  |  {skipped} skipped  |  {updated} updated  |  {failed} failed"
     )
+    if interrupted:
+        print("  Partial batch saved to cache; re-run to resume the remaining targets.")
     if failed:
         print("  Tip: re-run with same flags to retry failed downloads (retry logic included).")
     print(f"  Location : {output_dir}\n")
-
-
-def export_results(plugins: list[dict], output_dir: str, target_installs: int) -> tuple[Path, Path]:
-    Path(output_dir).mkdir(parents=True, exist_ok=True)
-    base_name = f"plugins_{format_installs(target_installs).replace('+', '')}"
-
-    json_path = Path(output_dir) / f"{base_name}.json"
-    _atomic_write_json(json_path, [dict(plugin) for plugin in plugins])
-
-    csv_path = Path(output_dir) / f"{base_name}.csv"
-    fieldnames = [
-        "name",
-        "slug",
-        "version",
-        "active_installs",
-        "downloaded",
-        "last_updated",
-        "author",
-        "requires",
-        "requires_php",
-        "tested",
-        "download_link",
-        "homepage",
-        "tags",
-    ]
-    with _atomic_text_file(csv_path, newline="") as fh:
-        writer = csv.DictWriter(fh, fieldnames=fieldnames, extrasaction="ignore")
-        writer.writeheader()
-        for p in plugins:
-            row = dict(p)
-            row["tags"] = "|".join(p.get("tags") or [])
-            writer.writerow({k: _csv_safe(v) for k, v in row.items()})
-
-    print(f"  Exported: {json_path.name}  +  {csv_path.name}")
-    return json_path, csv_path
-
-
-def export_patchstack_results(plugins: list[dict], output_dir: str) -> tuple[Path, Path]:
-    Path(output_dir).mkdir(parents=True, exist_ok=True)
-    json_path = Path(output_dir) / "patchstack_targets.json"
-    _atomic_write_json(json_path, [dict(plugin) for plugin in plugins])
-
-    csv_path = Path(output_dir) / "patchstack_targets.csv"
-    fields = [
-        "patchstack_boost",
-        "patchstack_max_bounty",
-        "slug",
-        "name",
-        "asset_kind",
-        "version",
-        "active_installs",
-        "last_updated",
-        "patchstack_vendor",
-        "download_link",
-    ]
-    with _atomic_text_file(csv_path, newline="") as fh:
-        writer = csv.DictWriter(fh, fieldnames=fields, extrasaction="ignore")
-        writer.writeheader()
-        for p in plugins:
-            writer.writerow({k: _csv_safe(v) for k, v in p.items()})
-
-    print(f"  Exported: {json_path.name}  +  {csv_path.name}")
-    return json_path, csv_path
-
-
-def print_summary_table(plugins: list[dict], quiet: bool = False) -> None:
-    if quiet:
-        print(f"  Plugins collected: {len(plugins)}  (use without --quiet to see the full list)")
-        return
-    if not plugins:
-        print("  [!] No plugins found.")
-        return
-    show = plugins[:50]
-    print(f"\n  {'No':<4} {'Plugin Name':<42} {'Slug':<30} {'Ver':<8} {'Updated':<12}")
-    print(f"  {'-' * 4} {'-' * 42} {'-' * 30} {'-' * 8} {'-' * 12}")
-    for i, p in enumerate(show, 1):
-        name = _display_text(p.get("name", ""), 41)
-        slug = _display_text(p.get("slug", ""), 29)
-        version = _display_text(p.get("version", ""), 7)
-        updated = _display_text(p.get("last_updated") or "N/A", 10)
-        print(f"  {i:<4} {name:<42} {slug:<30} {version:<8} {updated:<12}")
-    if len(plugins) > 50:
-        print(f"  … and {len(plugins) - 50} more  (full list in exported JSON/CSV)")
+    if interrupted:
+        raise KeyboardInterrupt

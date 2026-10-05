@@ -9,11 +9,12 @@ import tempfile
 import zipfile
 from pathlib import Path
 
+from .safe_names import is_safe_slug as _is_safe_slug
+
 MAX_ARCHIVE_MEMBERS = 50_000
 MAX_ARCHIVE_MEMBER_BYTES = 256 * 1024 * 1024
 MAX_ARCHIVE_UNPACKED_BYTES = 1 * 1024 * 1024 * 1024
 SOURCE_SUFFIXES = {".php", ".js", ".jsx", ".mjs", ".cjs"}
-_SAFE_SLUG_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 
 
 def validate_zip_members(zf: zipfile.ZipFile) -> None:
@@ -61,7 +62,7 @@ def looks_like_plugin_dir(path: Path) -> bool:
     if (
         path.is_symlink()
         or not path.is_dir()
-        or not _SAFE_SLUG_RE.fullmatch(path.name)
+        or not _is_safe_slug(path.name)
         or path.name.startswith(("_", "."))
     ):
         return False
