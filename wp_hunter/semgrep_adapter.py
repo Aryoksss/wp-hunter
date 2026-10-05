@@ -229,9 +229,23 @@ def run_semgrep_scan(
         return [], "INVALID_OUTPUT"
     if not isinstance(data, dict) or not isinstance(data.get("results"), list):
         return [], "INVALID_OUTPUT"
-    if isinstance(data.get("errors"), list) and data["errors"]:
+    if _has_fatal_semgrep_error(data.get("errors")):
         return [], "PARSE_ERROR"
     return [_normalize_semgrep_result(item) for item in data["results"]], "OK"
+
+
+def _has_fatal_semgrep_error(errors: object) -> bool:
+    # Semgrep reports per-file warnings (rule timeouts, partial parses) on
+    # minified assets while still completing the scan and returning results.
+    # Only "warn"-level entries are non-fatal; anything unclassified fails closed.
+    if not isinstance(errors, list):
+        return False
+    for entry in errors:
+        if not isinstance(entry, dict):
+            return True
+        if str(entry.get("level", "")).lower() != "warn":
+            return True
+    return False
 
 
 class SemgrepEngine:

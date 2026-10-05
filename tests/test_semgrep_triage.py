@@ -207,7 +207,22 @@ class SemgrepAdapterTests(unittest.TestCase):
         self.assertEqual(status, "INVALID_OUTPUT")
 
     def test_semgrep_parse_errors_are_fail_closed(self):
-        payload = {"results": [], "errors": [{"message": "bad PHP"}]}
+        payload = {"results": [], "errors": [{"level": "error", "message": "bad PHP"}]}
+        results, status = self.scan_with(fake_process(0, json.dumps(payload)))
+        self.assertEqual(results, [])
+        self.assertEqual(status, "PARSE_ERROR")
+
+    def test_semgrep_warning_errors_keep_results(self):
+        payload = {
+            "results": [{"check_id": "wordpress.test", "path": "a.php", "start": {"line": 1}}],
+            "errors": [{"level": "warn", "type": "Timeout", "message": "minified asset"}],
+        }
+        results, status = self.scan_with(fake_process(0, json.dumps(payload)))
+        self.assertEqual(status, "OK")
+        self.assertEqual(len(results), 1)
+
+    def test_semgrep_error_without_level_is_fatal(self):
+        payload = {"results": [], "errors": [{"type": "Rule parse error"}]}
         results, status = self.scan_with(fake_process(0, json.dumps(payload)))
         self.assertEqual(results, [])
         self.assertEqual(status, "PARSE_ERROR")
