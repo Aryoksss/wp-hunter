@@ -7,11 +7,9 @@ import subprocess
 import tempfile
 from pathlib import Path
 
+from .text import display_text as _display_text
+
 MAX_SEMGREP_JSON_BYTES = 64 * 1024 * 1024
-
-
-def _display_text(value: object) -> str:
-    return re.sub(r"[\x00-\x1f\x7f\x80-\x9f]", " ", str(value or ""))
 
 
 def decode_process_output(value: object, limit: int = 512) -> str:

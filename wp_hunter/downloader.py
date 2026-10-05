@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import csv
-import hashlib
 import os
 import tempfile
 import time
@@ -19,36 +18,22 @@ from .core import (
     MAX_DOWNLOAD_REDIRECTS,
     ROOT_MARKER_FILE,
     ProgressBar,
-    _atomic_text_file,
-    _atomic_write_json,
     _csv_safe,
     _display_text,
     _ensure_hunter_root,
-    _is_safe_slug,
     _root_marker_state,
     _safe_download_filename,
     _safe_download_url,
     format_installs,
 )
+from .fsutil import atomic_text_file as _atomic_text_file
+from .fsutil import atomic_write_json as _atomic_write_json
+from .fsutil import md5_of_file as _md5_of_file
+from .fsutil import sha256_of_file as _sha256_of_file
+from .safe_names import is_safe_slug as _is_safe_slug
 from .semgrep_adapter import decode_process_output as _decode_process_output
 from .state import DownloadManifest
 from .versioning import version_is_newer
-
-
-def _md5_of_file(path: Path) -> str:
-    h = hashlib.md5()
-    with open(path, "rb") as fh:
-        for chunk in iter(lambda: fh.read(65_536), b""):
-            h.update(chunk)
-    return h.hexdigest()
-
-
-def _sha256_of_file(path: Path) -> str:
-    h = hashlib.sha256()
-    with open(path, "rb") as fh:
-        for chunk in iter(lambda: fh.read(65_536), b""):
-            h.update(chunk)
-    return h.hexdigest()
 
 
 def _validate_download_archive(

@@ -1,18 +1,17 @@
-import json
 import os
 import re
 import shutil
 import stat
 import sys
-import tempfile
 import threading
 import time
-from contextlib import contextmanager, suppress
+from contextlib import suppress
 from datetime import datetime
 from html.parser import HTMLParser
 from pathlib import Path
 from urllib.parse import urlsplit
 
+from wp_hunter.safe_names import is_safe_filename as _is_safe_filename
 from wp_hunter.semgrep_adapter import (
     validate_semgrep_config as _validate_semgrep_config,
 )
@@ -20,6 +19,7 @@ from wp_hunter.state import (
     MANIFEST_FILE,
     REVIEWED_FILE,
 )
+from wp_hunter.text import display_text as _display_text
 
 API_URL = "https://api.wordpress.org/plugins/info/1.2/"
 REQUESTS_MIN_VERSION = (2, 34, 2)
@@ -33,8 +33,6 @@ MAX_DOWNLOAD_BYTES = 512 * 1024 * 1024
 MAX_API_WORKERS = 10
 MAX_PATCHSTACK_PAGES = 2_000
 MAX_DOWNLOAD_REDIRECTS = 5
-SAFE_SLUG_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
-SAFE_FILENAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,254}$")
 ALLOWED_DOWNLOAD_HOST_SUFFIX = ".wordpress.org"
 
 # Make stdout/stderr tolerant of Unicode (progress bars, box chars, ✓) even when
@@ -71,11 +69,6 @@ def _safe_triage_workers(requested: int, mem_mb_per_worker: int) -> tuple[int, s
     return requested, ""
 
 
-def _display_text(value: object, limit: int | None = None) -> str:
-    text = re.sub(r"[\x00-\x1f\x7f\x80-\x9f]", " ", str(value or ""))
-    return text[:limit] if limit is not None else text
-
-
 def _remote_nonnegative_int(
     value: object,
     default: int = 0,
@@ -93,14 +86,6 @@ def _remote_nonnegative_int(
 def _numeric_version_tuple(value: object, width: int = 3) -> tuple[int, ...]:
     parts = [int(part) for part in re.findall(r"\d+", str(value))[:width]]
     return tuple((parts + [0] * width)[:width])
-
-
-def _is_safe_slug(slug: object) -> bool:
-    return isinstance(slug, str) and bool(SAFE_SLUG_RE.fullmatch(slug))
-
-
-def _is_safe_filename(filename: object) -> bool:
-    return isinstance(filename, str) and bool(SAFE_FILENAME_RE.fullmatch(filename))
 
 
 def _safe_download_url(download_url: object) -> bool:
@@ -320,39 +305,6 @@ def _csv_safe(value: object) -> object:
     if text[index : index + 1] in {"=", "+", "-", "@"}:
         return "'" + text
     return text
-
-
-@contextmanager
-def _atomic_text_file(path: str | Path, newline: str | None = None):
-    destination = Path(path)
-    parent = destination.parent
-    if parent.is_symlink() or not parent.is_dir():
-        raise ValueError(f"Unsafe output parent: {parent}")
-    fd, temporary_name = tempfile.mkstemp(
-        prefix=f".{destination.name}.", suffix=".tmp", dir=str(parent)
-    )
-    temporary = Path(temporary_name)
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8", newline=newline) as fh:
-            fd = -1
-            yield fh
-            fh.flush()
-            os.fsync(fh.fileno())
-        os.replace(temporary, destination)
-    finally:
-        if fd >= 0:
-            os.close(fd)
-        temporary.unlink(missing_ok=True)
-
-
-def _atomic_write_json(path: str | Path, value: object) -> None:
-    with _atomic_text_file(path) as fh:
-        json.dump(value, fh, indent=2, ensure_ascii=False)
-
-
-def _atomic_write_text(path: str | Path, value: str) -> None:
-    with _atomic_text_file(path) as fh:
-        fh.write(value)
 
 
 SEMGREP_RULES_DEFAULT = Path(__file__).parent / "resources" / "wordpress-triage.yml"
@@ -647,10 +599,6 @@ def _ask_choice(prompt: str, choices: list[str], default: str) -> str:
             return default
         if value in choices:
             return value
-
-
-_WPORG_RATE_LOCK = threading.Lock()
-_WPORG_LAST_REQUEST_AT = 0.0
 
 
 def _find_semgrep(explicit: str | None) -> str | None:

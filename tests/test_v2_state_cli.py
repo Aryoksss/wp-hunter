@@ -64,7 +64,7 @@ class StateMigrationTests(unittest.TestCase):
             original = json.dumps({"fixture": {"version": "1.0"}})
             path.write_text(original, encoding="utf-8")
             with (
-                patch("wp_hunter.state.os.replace", side_effect=OSError("blocked")),
+                patch("wp_hunter.fsutil.os.replace", side_effect=OSError("blocked")),
                 self.assertRaises(OSError),
             ):
                 DownloadManifest(root)

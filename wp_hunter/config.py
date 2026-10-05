@@ -4,10 +4,12 @@ import json
 import os
 import re
 import sys
-import tempfile
 from copy import deepcopy
 from pathlib import Path
 from typing import Any
+
+from .fsutil import atomic_text_file
+from .models import PRESET_KEYS
 
 CONFIG_SCHEMA_VERSION = 1
 PRESET_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
@@ -26,24 +28,6 @@ BUILTIN_PRESETS: dict[str, dict[str, Any]] = {
         "include_themes": False,
         "max_age_years": 2,
     },
-}
-ALLOWED_PRESET_KEYS = {
-    "source",
-    "installs",
-    "installs_mode",
-    "browse",
-    "pages",
-    "search",
-    "tag",
-    "min_boost",
-    "include_themes",
-    "max_age_years",
-    "since",
-    "limit",
-    "output",
-    "workers",
-    "api_workers",
-    "max_download_mb",
 }
 
 
@@ -125,22 +109,9 @@ def save_config(data: dict[str, Any], path: Path | None = None) -> Path:
     target.parent.mkdir(parents=True, exist_ok=True)
     if target.parent.is_symlink() or target.is_symlink():
         raise ValueError(f"Refusing unsafe configuration path: {target}")
-    fd, temporary_name = tempfile.mkstemp(
-        prefix=f".{target.name}.", suffix=".tmp", dir=str(target.parent)
-    )
-    temporary = Path(temporary_name)
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            fd = -1
-            json.dump(validated, handle, indent=2, ensure_ascii=False)
-            handle.write("\n")
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(temporary, target)
-    finally:
-        if fd >= 0:
-            os.close(fd)
-        temporary.unlink(missing_ok=True)
+    with atomic_text_file(target) as handle:
+        json.dump(validated, handle, indent=2, ensure_ascii=False)
+        handle.write("\n")
     return target
 
 
@@ -149,7 +120,7 @@ def validate_preset(name: object, values: object) -> dict[str, Any]:
         raise ValueError("Preset name must use lowercase letters, numbers, '.', '_' or '-'")
     if not isinstance(values, dict):
         raise ValueError(f"Preset {name!r} must be an object")
-    unknown = set(values) - ALLOWED_PRESET_KEYS
+    unknown = set(values) - PRESET_KEYS
     if unknown:
         raise ValueError(
             f"Preset contains unsafe or unsupported options: {', '.join(sorted(unknown))}"

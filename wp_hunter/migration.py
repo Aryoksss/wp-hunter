@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 import json
-import os
-import tempfile
 from pathlib import Path
+
+from .fsutil import atomic_text_file
 
 
 def migrate_triage_result(root: str | Path) -> bool:
@@ -49,20 +49,7 @@ def migrate_triage_result(root: str | Path) -> bool:
         },
         "results": results,
     }
-    fd, temporary_name = tempfile.mkstemp(
-        prefix=".triage_results.", suffix=".tmp", dir=str(path.parent)
-    )
-    temporary = Path(temporary_name)
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            fd = -1
-            json.dump(payload, handle, indent=2, ensure_ascii=False)
-            handle.write("\n")
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(temporary, path)
-    finally:
-        if fd >= 0:
-            os.close(fd)
-        temporary.unlink(missing_ok=True)
+    with atomic_text_file(path) as handle:
+        json.dump(payload, handle, indent=2, ensure_ascii=False)
+        handle.write("\n")
     return True

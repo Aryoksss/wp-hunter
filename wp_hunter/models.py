@@ -4,6 +4,27 @@ from collections.abc import Iterator, Mapping
 from dataclasses import asdict, dataclass, field
 from typing import Any, Literal
 
+PRESET_KEYS = frozenset(
+    {
+        "source",
+        "installs",
+        "installs_mode",
+        "browse",
+        "pages",
+        "search",
+        "tag",
+        "min_boost",
+        "include_themes",
+        "max_age_years",
+        "since",
+        "limit",
+        "output",
+        "workers",
+        "api_workers",
+        "max_download_mb",
+    }
+)
+
 
 @dataclass(slots=True)
 class PluginRecord(Mapping[str, Any]):
@@ -80,25 +101,9 @@ class DownloadOptions:
 
     def preset_values(self) -> dict[str, Any]:
         values = asdict(self)
-        allowed = {
-            "source",
-            "installs",
-            "installs_mode",
-            "browse",
-            "pages",
-            "search",
-            "tag",
-            "min_boost",
-            "include_themes",
-            "max_age_years",
-            "since",
-            "limit",
-            "output",
-            "workers",
-            "api_workers",
-            "max_download_mb",
+        return {
+            key: value for key, value in values.items() if key in PRESET_KEYS and value is not None
         }
-        return {key: value for key, value in values.items() if key in allowed and value is not None}
 
 
 @dataclass(slots=True)

@@ -15,7 +15,6 @@ from .core import (
     MAX_PATCHSTACK_PAGES,
     ProgressBar,
     _display_text,
-    _is_safe_slug,
     _remote_nonnegative_int,
     extract_author_text,
     format_installs,
@@ -23,6 +22,7 @@ from .core import (
 from .dates import plugin_last_updated as _plugin_last_updated_dt
 from .dates import resolve_cutoff_date as _resolve_cutoff_date
 from .models import PluginRecord
+from .safe_names import is_safe_slug as _is_safe_slug
 
 _WPORG_RATE_LOCK = threading.Lock()
 _WPORG_LAST_REQUEST_AT = 0.0

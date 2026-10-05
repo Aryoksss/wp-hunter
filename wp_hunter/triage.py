@@ -14,9 +14,6 @@ from .core import (
     ROOT_MARKER_FILE,
     ProgressBar,
     _ask_choice,
-    _atomic_text_file,
-    _atomic_write_json,
-    _atomic_write_text,
     _directory_identity,
     _display_text,
     _is_direct_child,
@@ -25,6 +22,9 @@ from .core import (
 )
 from .dates import plugin_last_updated as _plugin_last_updated_dt
 from .dates import resolve_cutoff_date as _resolve_cutoff_date
+from .fsutil import atomic_text_file as _atomic_text_file
+from .fsutil import atomic_write_json as _atomic_write_json
+from .fsutil import atomic_write_text as _atomic_write_text
 from .semgrep_adapter import SemgrepEngine
 from .state import ReviewLedger
 

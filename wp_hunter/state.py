@@ -1,66 +1,22 @@
 from __future__ import annotations
 
-import hashlib
 import json
-import os
 import re
-import tempfile
 import threading
 import time
 import zipfile
-from collections.abc import Iterator
-from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
+from .fsutil import atomic_write_json as _atomic_write_json
+from .fsutil import sha256_of_file as _sha256_of_file
+from .safe_names import is_safe_filename as _is_safe_filename
+from .safe_names import is_safe_slug as _is_safe_slug
 from .versioning import version_is_newer
 
 MANIFEST_FILE = "downloaded_slugs.json"
 REVIEWED_FILE = "reviewed_slugs.json"
 STATE_SCHEMA_VERSION = 2
-_SAFE_SLUG_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
-_SAFE_FILENAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,254}$")
-
-
-def _is_safe_slug(value: object) -> bool:
-    return isinstance(value, str) and bool(_SAFE_SLUG_RE.fullmatch(value))
-
-
-def _is_safe_filename(value: object) -> bool:
-    return isinstance(value, str) and bool(_SAFE_FILENAME_RE.fullmatch(value))
-
-
-def _sha256_of_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with open(path, "rb") as fh:
-        for chunk in iter(lambda: fh.read(65_536), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
-@contextmanager
-def _atomic_text_file(path: Path) -> Iterator[object]:
-    parent = path.parent
-    if parent.is_symlink() or not parent.is_dir():
-        raise ValueError(f"Unsafe state parent: {parent}")
-    fd, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=str(parent))
-    temporary = Path(temporary_name)
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            fd = -1
-            yield fh
-            fh.flush()
-            os.fsync(fh.fileno())
-        os.replace(temporary, path)
-    finally:
-        if fd >= 0:
-            os.close(fd)
-        temporary.unlink(missing_ok=True)
-
-
-def _atomic_write_json(path: Path, value: object) -> None:
-    with _atomic_text_file(path) as fh:
-        json.dump(value, fh, indent=2, ensure_ascii=False)
 
 
 def _state_payload(plugins: dict) -> dict:
