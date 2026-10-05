@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import sys
 import tempfile
 import time
 import zipfile
@@ -319,52 +320,62 @@ def download_all(
         return
 
     success = updated = failed = skipped = 0
+    interrupted = False
     bar = ProgressBar(total=len(plugins), label="Downloading")
     bar.start()
 
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        futures = {
-            executor.submit(
-                download_plugin,
-                p,
-                output_dir,
-                skip_existing,
-                manifest,
-                update_check,
-                global_slugs,
-                max_bytes,
-            ): p
-            for p in plugins
-        }
-        for future in as_completed(futures):
-            try:
-                ok, slug, msg = future.result()
-            except Exception as exc:
-                plugin = futures[future]
-                ok = False
-                slug = str(plugin.get("slug", "unknown"))
-                msg = f"Worker crashed: {_decode_process_output(exc, 160)}"
-            msg_lower = msg.lower()
-            if ok:
-                if any(w in msg_lower for w in ("already", "up to date", "on disk", "dedup")):
-                    skipped += 1
-                    status = "SKIP"
-                elif update_check and "ok" in msg_lower:
-                    updated += 1
-                    status = " UPD"
+    try:
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = {
+                executor.submit(
+                    download_plugin,
+                    p,
+                    output_dir,
+                    skip_existing,
+                    manifest,
+                    update_check,
+                    global_slugs,
+                    max_bytes,
+                ): p
+                for p in plugins
+            }
+            for future in as_completed(futures):
+                try:
+                    ok, slug, msg = future.result()
+                except Exception as exc:
+                    plugin = futures[future]
+                    ok = False
+                    slug = str(plugin.get("slug", "unknown"))
+                    msg = f"Worker crashed: {_decode_process_output(exc, 160)}"
+                msg_lower = msg.lower()
+                if ok:
+                    if any(w in msg_lower for w in ("already", "up to date", "on disk", "dedup")):
+                        skipped += 1
+                        status = "SKIP"
+                    elif update_check and "ok" in msg_lower:
+                        updated += 1
+                        status = " UPD"
+                    else:
+                        success += 1
+                        status = " OK "
                 else:
-                    success += 1
-                    status = " OK "
-            else:
-                failed += 1
-                status = "FAIL"
-            bar.update(message=f"[{status}] {slug}")
+                    failed += 1
+                    status = "FAIL"
+                bar.update(message=f"[{status}] {slug}")
+    except KeyboardInterrupt:
+        interrupted = True
+        print("\n  [WARN] Interrupted — flushing download cache before exit.", file=sys.stderr)
+    finally:
+        manifest.save()
+        bar.finish()
 
-    bar.finish()
-    manifest.save()
     print(
         f"\n  Results: {success} new  |  {skipped} skipped  |  {updated} updated  |  {failed} failed"
     )
+    if interrupted:
+        print("  Partial batch saved to cache; re-run to resume the remaining targets.")
     if failed:
         print("  Tip: re-run with same flags to retry failed downloads (retry logic included).")
     print(f"  Location : {output_dir}\n")
+    if interrupted:
+        raise KeyboardInterrupt

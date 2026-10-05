@@ -1133,6 +1133,26 @@ class DownloadAndExportTests(unittest.TestCase):
                 )
                 self.assertEqual(write.call_count, 1)
 
+    def test_interrupted_batch_still_flushes_manifest_and_reraises(self):
+        plugins = [{"slug": "interrupt-plugin", "name": "Interrupt", "version": "1.0"}]
+        with tempfile.TemporaryDirectory() as temp_name:
+            root = hunter._ensure_hunter_root(temp_name)
+
+            def interrupt(_future):
+                raise KeyboardInterrupt()
+
+            with (
+                patch.object(downloader, "ProgressBar"),
+                patch.object(downloader, "download_plugin", return_value=(True, "interrupt-plugin", "OK")),
+                patch.object(downloader, "as_completed", side_effect=interrupt),
+                patch.object(DownloadManifest, "save") as save,
+                contextlib.redirect_stdout(io.StringIO()),
+                contextlib.redirect_stderr(io.StringIO()),
+                self.assertRaises(KeyboardInterrupt),
+            ):
+                downloader.download_all(plugins, str(root), max_workers=1)
+            save.assert_called_once()
+
 
 class CliAndRuleTests(unittest.TestCase):
     def test_installed_cli_exposes_version(self):
