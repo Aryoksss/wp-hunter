@@ -4,6 +4,13 @@
   <img src="assets/branding/wp-hunter-logo.png" alt="WP Hunter logo" width="180">
 </p>
 
+<p align="center">
+  <a href="https://github.com/Aryoksss/wp-hunter/releases/latest"><img src="https://img.shields.io/github/v/release/Aryoksss/wp-hunter?label=release" alt="Latest release"></a>
+  <a href="https://github.com/Aryoksss/wp-hunter/actions/workflows/ci.yml"><img src="https://github.com/Aryoksss/wp-hunter/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <img src="https://img.shields.io/badge/python-3.10%2B-blue" alt="Python 3.10+">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-green" alt="License: MIT"></a>
+</p>
+
 WP Hunter is a bilingual command-line toolkit for collecting WordPress.org and
 Patchstack VDP targets, downloading verified plugin archives, and running
 fail-safe Semgrep triage.
@@ -14,6 +21,16 @@ fail-safe Semgrep triage.
 
 Python 3.10 or newer is required. `pipx` keeps the command isolated from other
 Python projects.
+
+Install the latest release wheel:
+
+```bash
+pipx install https://github.com/Aryoksss/wp-hunter/releases/latest/download/wp_hunter-2.1.0-py3-none-any.whl
+wp-hunter --version
+wp-hunter doctor
+```
+
+Or from a source checkout:
 
 ```bash
 git clone https://github.com/Aryoksss/wp-hunter.git
@@ -34,6 +51,7 @@ Semgrep is optional for downloads and required only by `wp-hunter scan`:
 ```bash
 pipx inject wp-hunter semgrep
 ```
+
 
 ## Quick start
 
@@ -158,15 +176,19 @@ only when that behavior should be bypassed.
 
 ```bash
 ruff check wp_hunter tests
+ruff format --check wp_hunter tests
+mypy wp_hunter
 python -m compileall -q wp_hunter tests
 python -m unittest discover -s tests -v
-python -m build --wheel
+python -m build
 ```
 
-The package is organized into CLI/config/i18n, application services, state and
-migration, archive safety, Semgrep adapter, and the collection/download/triage
-engine. Comments are intentionally limited to public contracts and non-obvious
-security rationale.
+The package is organized into a thin `cli`/`cli_menu`/`config`/`i18n` front end,
+application `services`, a `triage/` package (`engine`, `report`, `runner`), and
+focused support modules for state and migration, archive safety, Semgrep
+adaptation, path/security helpers, download and export, and source collectors
+under a shared pooled HTTP client. Comments are intentionally limited to public
+contracts and non-obvious security rationale.
 
 ## License
 

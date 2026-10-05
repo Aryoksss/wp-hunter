@@ -4,6 +4,13 @@
   <img src="assets/branding/wp-hunter-logo.png" alt="Logo WP Hunter" width="180">
 </p>
 
+<p align="center">
+  <a href="https://github.com/Aryoksss/wp-hunter/releases/latest"><img src="https://img.shields.io/github/v/release/Aryoksss/wp-hunter?label=release" alt="Rilis terbaru"></a>
+  <a href="https://github.com/Aryoksss/wp-hunter/actions/workflows/ci.yml"><img src="https://github.com/Aryoksss/wp-hunter/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <img src="https://img.shields.io/badge/python-3.10%2B-blue" alt="Python 3.10+">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-green" alt="Lisensi: MIT"></a>
+</p>
+
 WP Hunter adalah toolkit command-line bilingual untuk mengumpulkan target dari
 WordPress.org dan Patchstack VDP, mengunduh arsip plugin terverifikasi, serta
 menjalankan triage Semgrep secara fail-safe.
@@ -13,6 +20,16 @@ menjalankan triage Semgrep secara fail-safe.
 ## Instalasi
 
 Gunakan Python 3.10 atau lebih baru. `pipx` menjaga instalasi tetap terisolasi.
+
+Instal wheel dari rilis terbaru:
+
+```bash
+pipx install https://github.com/Aryoksss/wp-hunter/releases/latest/download/wp_hunter-2.1.0-py3-none-any.whl
+wp-hunter --version
+wp-hunter doctor
+```
+
+Atau dari source checkout:
 
 ```bash
 git clone https://github.com/Aryoksss/wp-hunter.git
@@ -33,6 +50,7 @@ Semgrep bersifat opsional untuk download dan hanya diperlukan oleh proses scan:
 ```bash
 pipx inject wp-hunter semgrep
 ```
+
 
 ## Mulai cepat
 
@@ -140,10 +158,19 @@ mengulang rilis tanpa perubahan.
 
 ```bash
 ruff check wp_hunter tests
+ruff format --check wp_hunter tests
+mypy wp_hunter
 python -m compileall -q wp_hunter tests
 python -m unittest discover -s tests -v
-python -m build --wheel
+python -m build
 ```
+
+Paket dipecah menjadi front end tipis `cli`/`cli_menu`/`config`/`i18n`, lapisan
+`services`, paket `triage/` (`engine`, `report`, `runner`), serta modul pendukung
+terfokus untuk state dan migrasi, keamanan arsip, adaptor Semgrep, helper
+path/keamanan, download dan export, dan kolektor sumber di atas HTTP client
+terpool. Komentar sengaja dibatasi pada kontrak publik dan alasan keamanan yang
+tidak jelas dari kodenya.
 
 ## Lisensi
 
