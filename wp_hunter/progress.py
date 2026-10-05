@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import os
 import sys
 import threading
@@ -11,6 +12,8 @@ from .text import display_text
 class ProgressBar:
     _WIDTH = 30
 
+    _MILESTONES = 20
+
     def __init__(self, total: int, label: str = "Progress"):
         self._total = max(total, 1)
         self._label = label
@@ -19,6 +22,7 @@ class ProgressBar:
         self._is_tty = sys.stdout.isatty()
         self._start_time = 0.0
         self._last_render_width = 0
+        self._milestone_step = max(1, math.ceil(self._total / self._MILESTONES))
         # Use Unicode blocks only if the output encoding can represent them;
         # otherwise fall back to ASCII (avoids UnicodeEncodeError on cp1252).
         enc = (getattr(sys.stdout, "encoding", "") or "").lower()
@@ -72,6 +76,6 @@ class ProgressBar:
             sys.stdout.flush()
             self._last_render_width = len(line)
         else:
-            milestone = final or (done % max(1, self._total // 20) == 0)
+            milestone = final or (done % self._milestone_step == 0)
             if milestone:
                 print(line, flush=True)
