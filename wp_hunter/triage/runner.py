@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import os
-import shutil
 import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
@@ -16,6 +15,9 @@ from ..paths import (
 )
 from ..paths import (
     is_direct_child as _is_direct_child,
+)
+from ..paths import (
+    remove_directory as _remove_directory,
 )
 from ..paths import (
     root_marker_state as _root_marker_state,
@@ -223,7 +225,7 @@ def run_triage(
             if _directory_identity(r["dir"]) != tuple(r["dir_identity"]):
                 raise ValueError("deletion target changed after scanning")
             reviewed_version, reviewed_sha256 = plugin_review_identity(r["dir"])
-            shutil.rmtree(r["dir"])
+            _remove_directory(r["dir"], root, tuple(r["dir_identity"]))
             r["deletion"] = "deleted"
             deleted_names.append(r["name"])
             if review_ledger is not None:
@@ -260,15 +262,16 @@ def run_triage(
                 r["cleanup_status"] = "plugin_deleted"
                 continue
             try:
+                extracted_identity = _directory_identity(extracted_path)
                 if (
                     not _is_direct_child(root, plugin_path)
                     or _directory_identity(plugin_path) != tuple(r["dir_identity"])
                     or extracted_path != plugin_path / "extracted"
                     or extracted_path.is_symlink()
-                    or not extracted_path.is_dir()
+                    or extracted_identity is None
                 ):
                     raise ValueError("unsafe extracted directory")
-                shutil.rmtree(extracted_path)
+                _remove_directory(extracted_path, plugin_path, extracted_identity)
                 r["cleanup_status"] = "removed"
             except Exception as exc:
                 r["cleanup_status"] = f"failed:{exc}"

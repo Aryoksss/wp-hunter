@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import re
+import shutil
 import stat
 from pathlib import Path
 
@@ -182,3 +183,23 @@ def directory_identity(path: str | Path) -> tuple[int, int] | None:
     if not stat.S_ISDIR(details.st_mode):
         return None
     return details.st_dev, details.st_ino
+
+
+def remove_directory(
+    path: str | Path,
+    parent: Path,
+    expected_identity: tuple[int, int],
+) -> None:
+    closed_flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    parent_fd = os.open(parent, closed_flags)
+    try:
+        name = Path(path).name
+        try:
+            details = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+        except FileNotFoundError as exc:
+            raise UnsafePathError("deletion target disappeared before removal") from exc
+        if (details.st_dev, details.st_ino) != expected_identity:
+            raise UnsafePathError("deletion target changed before removal")
+        shutil.rmtree(name, dir_fd=parent_fd)
+    finally:
+        os.close(parent_fd)

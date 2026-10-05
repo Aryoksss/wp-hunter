@@ -19,7 +19,16 @@ import requests
 from typer.testing import CliRunner
 
 from wp_hunter import core as hunter
-from wp_hunter import downloader, http, httpclient, semgrep_adapter, semgrep_locate, sources, triage
+from wp_hunter import (
+    downloader,
+    http,
+    httpclient,
+    paths,
+    semgrep_adapter,
+    semgrep_locate,
+    sources,
+    triage,
+)
 from wp_hunter.cli import app
 from wp_hunter.config import (
     BUILTIN_PRESETS,
@@ -509,14 +518,14 @@ class TriageSafetyTests(unittest.TestCase):
             real_rmtree = shutil.rmtree
 
             def fail_target(path, *args, **kwargs):
-                if Path(path) == plugin:
+                if Path(path) == plugin or Path(path).name == plugin.name:
                     raise OSError("simulated failure")
                 return real_rmtree(path, *args, **kwargs)
 
             with (
                 patch.object(triage.runner, "SemgrepEngine", return_value=engine),
                 patch.object(triage.runner, "_ask_choice", return_value="yes"),
-                patch.object(triage.runner.shutil, "rmtree", side_effect=fail_target),
+                patch.object(paths.shutil, "rmtree", side_effect=fail_target),
                 contextlib.redirect_stdout(io.StringIO()),
                 contextlib.redirect_stderr(io.StringIO()),
             ):
@@ -574,6 +583,46 @@ class TriageSafetyTests(unittest.TestCase):
             payload = json.loads((root / "triage_results.json").read_text(encoding="utf-8"))
             self.assertEqual(payload["summary"]["deleted_count"], 0)
             self.assertEqual(payload["summary"]["deletion_failure_count"], 1)
+
+    @unittest.skipUnless(hasattr(os, "symlink"), "symlinks are unavailable")
+    def test_directory_swapped_for_symlink_after_scan_never_deletes_link_target(self):
+        with tempfile.TemporaryDirectory() as temp_name:
+            root = hunter._ensure_hunter_root(temp_name)
+            plugin = root / "swap-plugin"
+            moved = root / "swap-plugin-original"
+            victim = root / "victim"
+            victim.mkdir()
+            (victim / "keep.php").write_text("<?php", encoding="utf-8")
+            plugin.mkdir()
+            (plugin / "plugin.php").write_text("<?php", encoding="utf-8")
+            engine = SimpleNamespace(executable="semgrep", rules_path=RULES)
+
+            def swap_target(_target, *_args):
+                plugin.rename(moved)
+                os.symlink(victim, plugin, target_is_directory=True)
+                return [], "OK"
+
+            engine.scan = swap_target
+            with (
+                patch.object(triage.runner, "SemgrepEngine", return_value=engine),
+                patch.object(triage.runner, "_ask_choice", return_value="yes"),
+                contextlib.redirect_stdout(io.StringIO()),
+                contextlib.redirect_stderr(io.StringIO()),
+            ):
+                triage.run_triage(
+                    str(root),
+                    "semgrep",
+                    RULES,
+                    workers=1,
+                    timeout=5,
+                    mem_mb=128,
+                    dry_run=False,
+                    max_age_years=0,
+                )
+            self.assertTrue(victim.is_dir())
+            self.assertTrue((victim / "keep.php").is_file())
+            payload = json.loads((root / "triage_results.json").read_text(encoding="utf-8"))
+            self.assertEqual(payload["summary"]["deleted_count"], 0)
 
     @unittest.skipUnless(hasattr(os, "symlink"), "symlinks are unavailable")
     def test_report_write_replaces_symlink_without_touching_target(self):
