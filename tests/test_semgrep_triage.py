@@ -18,7 +18,7 @@ from unittest.mock import patch
 from typer.testing import CliRunner
 
 from wp_hunter import core as hunter
-from wp_hunter import downloader, semgrep_adapter, sources, triage
+from wp_hunter import downloader, semgrep_adapter, semgrep_locate, sources, triage
 from wp_hunter.cli import app
 from wp_hunter.config import (
     BUILTIN_PRESETS,
@@ -241,7 +241,7 @@ class SemgrepAdapterTests(unittest.TestCase):
         self.assertEqual(results[0]["extra"]["context"]["access"], "unknown")
 
     def test_find_semgrep_does_not_install(self):
-        with patch.object(hunter.shutil, "which", return_value=None):
+        with patch.object(semgrep_locate.shutil, "which", return_value=None):
             self.assertIsNone(hunter._find_semgrep(None))
 
 
@@ -515,7 +515,7 @@ class TriageSafetyTests(unittest.TestCase):
             with (
                 patch.object(triage, "SemgrepEngine", return_value=engine),
                 patch.object(triage, "_ask_choice", return_value="yes"),
-                patch.object(hunter.shutil, "rmtree", side_effect=fail_target),
+                patch.object(triage.shutil, "rmtree", side_effect=fail_target),
                 contextlib.redirect_stdout(io.StringIO()),
                 contextlib.redirect_stderr(io.StringIO()),
             ):

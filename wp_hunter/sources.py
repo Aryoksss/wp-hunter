@@ -4,6 +4,7 @@ import sys
 import threading
 import time
 from concurrent.futures import Future, ThreadPoolExecutor, as_completed
+from html.parser import HTMLParser
 
 import requests
 
@@ -16,7 +17,6 @@ from .core import (
     ProgressBar,
     _display_text,
     _remote_nonnegative_int,
-    extract_author_text,
     format_installs,
 )
 from .dates import plugin_last_updated as _plugin_last_updated_dt
@@ -26,6 +26,31 @@ from .safe_names import is_safe_slug as _is_safe_slug
 
 _WPORG_RATE_LOCK = threading.Lock()
 _WPORG_LAST_REQUEST_AT = 0.0
+
+
+class _AuthorParser(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self._parts: list[str] = []
+
+    def handle_data(self, data: str) -> None:
+        stripped = data.strip()
+        if stripped:
+            self._parts.append(stripped)
+
+    def result(self) -> str:
+        return " ".join(self._parts)
+
+
+def extract_author_text(html: str) -> str:
+    if not html:
+        return ""
+    if "<" not in html:
+        return html.strip()
+    parser = _AuthorParser()
+    parser.feed(html)
+    return parser.result() or html.strip()
+
 
 
 def _wporg_get(url: str, **kwargs):

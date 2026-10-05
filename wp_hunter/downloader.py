@@ -18,7 +18,6 @@ from .core import (
     MAX_DOWNLOAD_REDIRECTS,
     ROOT_MARKER_FILE,
     ProgressBar,
-    _csv_safe,
     _display_text,
     _ensure_hunter_root,
     _root_marker_state,
@@ -34,6 +33,18 @@ from .safe_names import is_safe_slug as _is_safe_slug
 from .semgrep_adapter import decode_process_output as _decode_process_output
 from .state import DownloadManifest
 from .versioning import version_is_newer
+
+
+def _csv_safe(value: object) -> object:
+    if value is None:
+        return ""
+    text = str(value)
+    index = 0
+    while index < len(text) and (text[index].isspace() or ord(text[index]) <= 0x20):
+        index += 1
+    if text[index : index + 1] in {"=", "+", "-", "@"}:
+        return "'" + text
+    return text
 
 
 def _validate_download_archive(
