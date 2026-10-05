@@ -6,6 +6,7 @@ from pathlib import Path
 
 from .migration import migrate_triage_result
 from .state import DownloadManifest, ReviewLedger
+from .triage_schema import RESULTS_FILE
 
 
 @dataclass(slots=True)
@@ -33,7 +34,7 @@ def inspect_root(value: str | Path) -> RootStatus:
     )
     candidates = errors = 0
     last_scan = ""
-    triage_path = root / "triage_results.json"
+    triage_path = root / RESULTS_FILE
     if triage_path.exists():
         if triage_path.is_symlink() or not triage_path.is_file():
             raise ValueError(f"Triage result is unsafe: {triage_path}")

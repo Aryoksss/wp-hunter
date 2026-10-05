@@ -12,6 +12,7 @@ from .constants import (
 )
 from .errors import UnsafePathError
 from .state import MANIFEST_FILE, REVIEWED_FILE
+from .triage_schema import ARTIFACT_FILES
 
 
 def protected_output_roots() -> set[Path]:
@@ -86,14 +87,7 @@ def looks_like_legacy_hunter_root(output_dir: str | Path) -> bool:
     if normalized_name.startswith(("wp_plugins_", "wp_hunter_")):
         return True
 
-    root_artifacts = {
-        MANIFEST_FILE,
-        "vuln_report.txt",
-        "vuln_plugins.txt",
-        "triage_results.json",
-        "deleted_plugins.txt",
-        REVIEWED_FILE,
-    }
+    root_artifacts = {MANIFEST_FILE, REVIEWED_FILE, *ARTIFACT_FILES}
     try:
         for index, child in enumerate(root.iterdir()):
             # A bounded inspection keeps this prompt fast even for broad folders.

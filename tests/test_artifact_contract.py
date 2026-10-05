@@ -68,7 +68,7 @@ def _run_triage_on(root: Path, findings_by_name: dict, **kwargs):
     }
     arguments.update(kwargs)
     with (
-        patch.object(triage, "SemgrepEngine", return_value=engine),
+        patch.object(triage.runner, "SemgrepEngine", return_value=engine),
         contextlib.redirect_stdout(io.StringIO()),
     ):
         triage.run_triage(str(root), "semgrep", RULES, **arguments)

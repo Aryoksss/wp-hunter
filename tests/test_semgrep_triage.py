@@ -258,7 +258,7 @@ class TriageSafetyTests(unittest.TestCase):
                 scan=lambda *_args: ([], "OK"),
             )
             with (
-                patch.object(triage, "SemgrepEngine", return_value=engine),
+                patch.object(triage.runner, "SemgrepEngine", return_value=engine),
                 contextlib.redirect_stdout(io.StringIO()),
             ):
                 triage.run_triage(
@@ -312,7 +312,7 @@ class TriageSafetyTests(unittest.TestCase):
             fake_engine.scan = scan
             output = io.StringIO()
             with (
-                patch.object(triage, "SemgrepEngine", return_value=fake_engine),
+                patch.object(triage.runner, "SemgrepEngine", return_value=fake_engine),
                 contextlib.redirect_stdout(output),
             ):
                 triage.run_triage(
@@ -366,8 +366,8 @@ class TriageSafetyTests(unittest.TestCase):
 
             engine.scan = scan
             with (
-                patch.object(triage, "SemgrepEngine", return_value=engine),
-                patch.object(triage, "_ask_choice", return_value="yes"),
+                patch.object(triage.runner, "SemgrepEngine", return_value=engine),
+                patch.object(triage.runner, "_ask_choice", return_value="yes"),
                 contextlib.redirect_stdout(io.StringIO()),
             ):
                 triage.run_triage(
@@ -408,8 +408,8 @@ class TriageSafetyTests(unittest.TestCase):
             )
             ledger = ReviewLedger(root)
             with (
-                patch.object(triage, "SemgrepEngine", return_value=engine),
-                patch.object(triage, "_ask_choice", return_value="yes"),
+                patch.object(triage.runner, "SemgrepEngine", return_value=engine),
+                patch.object(triage.runner, "_ask_choice", return_value="yes"),
                 contextlib.redirect_stdout(io.StringIO()),
             ):
                 triage.run_triage(
@@ -439,7 +439,7 @@ class TriageSafetyTests(unittest.TestCase):
                 scan=lambda *_args: ([], "OK"),
             )
             with (
-                patch.object(triage, "SemgrepEngine", return_value=engine),
+                patch.object(triage.runner, "SemgrepEngine", return_value=engine),
                 contextlib.redirect_stdout(io.StringIO()),
             ):
                 triage.run_triage(
@@ -477,7 +477,7 @@ class TriageSafetyTests(unittest.TestCase):
 
             engine.scan = scan
             with (
-                patch.object(triage, "SemgrepEngine", return_value=engine),
+                patch.object(triage.runner, "SemgrepEngine", return_value=engine),
                 contextlib.redirect_stdout(io.StringIO()),
             ):
                 triage.run_triage(
@@ -513,9 +513,9 @@ class TriageSafetyTests(unittest.TestCase):
                 return real_rmtree(path, *args, **kwargs)
 
             with (
-                patch.object(triage, "SemgrepEngine", return_value=engine),
-                patch.object(triage, "_ask_choice", return_value="yes"),
-                patch.object(triage.shutil, "rmtree", side_effect=fail_target),
+                patch.object(triage.runner, "SemgrepEngine", return_value=engine),
+                patch.object(triage.runner, "_ask_choice", return_value="yes"),
+                patch.object(triage.runner.shutil, "rmtree", side_effect=fail_target),
                 contextlib.redirect_stdout(io.StringIO()),
                 contextlib.redirect_stderr(io.StringIO()),
             ):
@@ -553,8 +553,8 @@ class TriageSafetyTests(unittest.TestCase):
 
             engine.scan = replace_target
             with (
-                patch.object(triage, "SemgrepEngine", return_value=engine),
-                patch.object(triage, "_ask_choice", return_value="yes"),
+                patch.object(triage.runner, "SemgrepEngine", return_value=engine),
+                patch.object(triage.runner, "_ask_choice", return_value="yes"),
                 contextlib.redirect_stdout(io.StringIO()),
                 contextlib.redirect_stderr(io.StringIO()),
             ):
@@ -591,7 +591,7 @@ class TriageSafetyTests(unittest.TestCase):
                 scan=lambda *_args: ([], "OK"),
             )
             with (
-                patch.object(triage, "SemgrepEngine", return_value=engine),
+                patch.object(triage.runner, "SemgrepEngine", return_value=engine),
                 contextlib.redirect_stdout(io.StringIO()),
             ):
                 triage.run_triage(
@@ -683,7 +683,7 @@ class RootSafetyTests(unittest.TestCase):
                 scan=lambda *_args: ([], "OK"),
             )
             with (
-                patch.object(triage, "SemgrepEngine", return_value=engine),
+                patch.object(triage.runner, "SemgrepEngine", return_value=engine),
                 contextlib.redirect_stdout(io.StringIO()),
                 contextlib.redirect_stderr(io.StringIO()),
             ):
@@ -704,7 +704,7 @@ class RootSafetyTests(unittest.TestCase):
             extracted.mkdir()
             (extracted / "plugin.php").write_text("<?php", encoding="utf-8")
             with (
-                patch.object(triage, "SemgrepEngine", return_value=engine),
+                patch.object(triage.runner, "SemgrepEngine", return_value=engine),
                 contextlib.redirect_stdout(io.StringIO()),
                 contextlib.redirect_stderr(io.StringIO()),
             ):
