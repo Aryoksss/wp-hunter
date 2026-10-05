@@ -687,16 +687,27 @@ class RemoveDirectoryTests(unittest.TestCase):
 
     @unittest.skipUnless(hasattr(os, "symlink"), "symlinks are unavailable")
     def test_symlink_swapped_for_target_is_never_followed(self):
-        target = self._target()
-        info = target.stat()
         victim = self.root / "victim"
         victim.mkdir()
         (victim / "keep.php").write_text("<?php", encoding="utf-8")
+        target = self._target()
+        info = target.stat()
         shutil.rmtree(target)
         os.symlink(victim, target, target_is_directory=True)
-        with self.assertRaises(ValueError):
+        with self.assertRaises((ValueError, OSError)):
             paths.remove_directory(target, self.root, (info.st_dev, info.st_ino))
         self.assertTrue((victim / "keep.php").is_file())
+        self.assertFalse((victim / "keep.php").is_symlink())
+
+    @unittest.skipUnless(hasattr(os, "symlink"), "symlinks are unavailable")
+    def test_symlink_is_rejected_by_identity_guard(self):
+        victim = self.root / "victim"
+        victim.mkdir()
+        target = self.root / "target"
+        os.symlink(victim, target, target_is_directory=True)
+        with self.assertRaises(ValueError):
+            paths.remove_directory(target, self.root, (0, 0))
+        self.assertTrue(victim.is_dir())
 
     def test_python310_fallback_removes_verified_directory(self):
         target = self._target()
