@@ -205,6 +205,43 @@ journalctl -u wp-hunter-watch -f
 dijalankan di terminal. Tambahkan `--vuln` dan `WPSCAN_API_TOKEN` ke service
 atau cron bila juga ingin alert kerentanan.
 
+**Opsi 3 — timer systemd.** Untuk satu pass terjadwal (tanpa proses yang terus
+hidup), pasangkan service oneshot dengan timer.
+
+`/etc/systemd/system/wp-hunter-watch.service`:
+
+```ini
+[Unit]
+Description=WP Hunter plugin update watcher (one pass)
+
+[Service]
+Type=oneshot
+Environment=TELEGRAM_BOT_TOKEN=123456:ABC-DEF...
+Environment=TELEGRAM_CHAT_ID=987654321
+ExecStart=/usr/local/bin/wp-hunter watch --limit 10
+```
+
+`/etc/systemd/system/wp-hunter-watch.timer`:
+
+```ini
+[Unit]
+Description=Jalankan WP Hunter plugin watcher tiap 30 menit
+
+[Timer]
+OnCalendar=*:0/30
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+```
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now wp-hunter-watch.timer
+systemctl list-timers wp-hunter-watch.timer
+journalctl -u wp-hunter-watch.service -f
+```
+
 ## Preset
 
 Tersedia dua preset bawaan yang tidak dapat diubah:

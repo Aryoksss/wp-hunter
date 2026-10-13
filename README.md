@@ -206,6 +206,43 @@ journalctl -u wp-hunter-watch -f
 run in a foreground terminal. Add `--vuln` and `WPSCAN_API_TOKEN` to a service
 or cron line if you also want vulnerability alerts.
 
+**Option 3 — systemd timer.** For a single scheduled pass (no resident
+process), pair a oneshot service with a timer.
+
+`/etc/systemd/system/wp-hunter-watch.service`:
+
+```ini
+[Unit]
+Description=WP Hunter plugin update watcher (one pass)
+
+[Service]
+Type=oneshot
+Environment=TELEGRAM_BOT_TOKEN=123456:ABC-DEF...
+Environment=TELEGRAM_CHAT_ID=987654321
+ExecStart=/usr/local/bin/wp-hunter watch --limit 10
+```
+
+`/etc/systemd/system/wp-hunter-watch.timer`:
+
+```ini
+[Unit]
+Description=Run WP Hunter plugin watcher every 30 minutes
+
+[Timer]
+OnCalendar=*:0/30
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+```
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now wp-hunter-watch.timer
+systemctl list-timers wp-hunter-watch.timer
+journalctl -u wp-hunter-watch.service -f
+```
+
 ## Presets
 
 Two immutable presets are included:
