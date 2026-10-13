@@ -13,6 +13,7 @@ from wp_hunter.notifiers import (
     TelegramNotifier,
     _split_message,
 )
+from wp_hunter.vulndb import ScanOutcome, Vulnerability, WpscanClient
 from wp_hunter.watch import run_watch
 from wp_hunter.watch_state import WatchState
 
@@ -224,6 +225,92 @@ class WatchRunnerTests(unittest.TestCase):
         text = post.call_args.kwargs["json"]["text"]
         self.assertIn("–", text)
         self.assertNotIn("&amp;#8211;", text)
+
+
+class WatchVulnerabilityTests(unittest.TestCase):
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.path = Path(self._tmp.name) / "watch_state.json"
+        self.page = {
+            "plugins": [
+                {
+                    "slug": "elementor",
+                    "name": "Elementor",
+                    "version": "3.5.0",
+                    "active_installs": 10_000_000,
+                    "last_updated": "2026-10-01",
+                }
+            ],
+            "info": {"pages": 1},
+        }
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def _client_with(self, outcome: ScanOutcome) -> WpscanClient:
+        client = WpscanClient(token="tok")
+        client.scan = lambda slug, version: outcome  # type: ignore[method-assign]
+        return client
+
+    def test_vulnerable_plugin_enters_report_and_message(self):
+        outcome = ScanOutcome(
+            slug="elementor",
+            vulnerabilities=[
+                Vulnerability("1", "Stored XSS", "XSS", "", 4.1, True),
+            ],
+        )
+        notifier = TelegramNotifier(token="t", chat_id="1")
+        with (
+            patch("wp_hunter.watch.http.query_plugins_page", return_value=self.page),
+            patch("wp_hunter.notifiers.httpclient.post") as post,
+        ):
+            post.return_value.status_code = 200
+            with contextlib.redirect_stderr(io.StringIO()):
+                report, _ = run_watch(
+                    state=WatchState(self.path),
+                    max_pages=1,
+                    notifier=notifier,
+                    check_vulnerabilities=True,
+                    vuln_client=self._client_with(outcome),
+                )
+        self.assertEqual([v.slug for v in report.vulnerable], ["elementor"])
+        self.assertTrue(report.has_changes)
+        text = post.call_args.kwargs["json"]["text"]
+        self.assertIn("Stored XSS", text)
+        self.assertIn("CVSS 4.1", text)
+
+    def test_vuln_errors_are_collected(self):
+        outcome = ScanOutcome(slug="elementor", error="HTTP 500")
+        with (
+            patch("wp_hunter.watch.http.query_plugins_page", return_value=self.page),
+            contextlib.redirect_stderr(io.StringIO()),
+        ):
+            report, _ = run_watch(
+                state=WatchState(self.path),
+                max_pages=1,
+                notify=False,
+                check_vulnerabilities=True,
+                vuln_client=self._client_with(outcome),
+            )
+        self.assertEqual(report.vuln_errors, ["elementor: HTTP 500"])
+        self.assertEqual(report.vulnerable, [])
+
+    def test_unconfigured_vuln_client_warns(self):
+        with patch.dict("os.environ", {}, clear=True):
+            client = WpscanClient()
+        stderr = io.StringIO()
+        with (
+            patch("wp_hunter.watch.http.query_plugins_page", return_value=self.page),
+            contextlib.redirect_stderr(stderr),
+        ):
+            run_watch(
+                state=WatchState(self.path),
+                max_pages=1,
+                notify=False,
+                check_vulnerabilities=True,
+                vuln_client=client,
+            )
+        self.assertIn("WPSCAN_API_TOKEN", stderr.getvalue())
 
 
 class WatchDaemonSignalTests(unittest.TestCase):

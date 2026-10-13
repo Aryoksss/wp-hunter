@@ -1,34 +1,22 @@
 from __future__ import annotations
 
-import json
-import signal
-import threading
-from dataclasses import dataclass
-from pathlib import Path
-
 import typer
 from rich.console import Console
-from rich.panel import Panel
-from rich.table import Table
 
-from . import __version__, cli_menu, core
-from . import watch as watch_module
-from .config import (
-    BUILTIN_PRESETS,
-    all_presets,
-    default_config,
-    get_preset,
-    load_config,
-    remember_root,
-    save_config,
-    save_preset,
+from . import (
+    __version__,
+    cli_commands,
+    cli_config,
+    cli_context,
+    cli_download,
+    cli_menu,
+    cli_presets,
+    cli_watch,
 )
+from .config import load_config
 from .i18n import get_language, set_language, tr
-from .installs import parse_installs_input as parse_installs
-from .models import DownloadOptions, ScanOptions
-from .services import DownloadResult, execute_download, execute_scan
-from .status import inspect_root
-from .validation import as_browse_mode
+from .models import ScanOptions
+from .services import execute_scan
 
 app = typer.Typer(
     name="wp-hunter",
@@ -36,36 +24,20 @@ app = typer.Typer(
     no_args_is_help=False,
     rich_markup_mode="rich",
 )
-download_app = typer.Typer(help="Download WordPress targets / Unduh target WordPress.")
-preset_app = typer.Typer(help="Manage workflow presets / Kelola preset workflow.")
-config_app = typer.Typer(help="Manage user preferences / Kelola preferensi pengguna.")
-app.add_typer(download_app, name="download")
-app.add_typer(preset_app, name="preset")
-app.add_typer(config_app, name="config")
+cli_watch.register(app)
+cli_commands.register(app)
+cli_download.register(app)
+cli_config.register(app)
+cli_presets.register(app, cli_download.run_download)
 
-
-@dataclass
-class AppContext:
-    config: dict
-    console: Console
-
-
-def _state(ctx: typer.Context) -> AppContext:
-    state = ctx.find_root().obj
-    if not isinstance(state, AppContext):
-        raise RuntimeError("WP Hunter application context is unavailable")
-    return state
-
-
-def _print_error(console: Console, error: object) -> None:
-    console.print(f"[bold red]{tr('common.error')}:[/bold red] {error}")
+AppContext = cli_context.AppContext
+_state = cli_context.state
+_print_error = cli_context.print_error
+_confirm_exact_path = cli_context.confirm_exact_path
 
 
 def _validate_date(value: str) -> str:
-    try:
-        return core._date_cli_value(value)
-    except Exception as exc:
-        raise typer.BadParameter("date must be YYYY, YYYY-MM, or YYYY-MM-DD") from exc
+    return cli_download.validate_date(value)
 
 
 @app.callback(invoke_without_command=True)
@@ -99,191 +71,6 @@ def main(
     ctx.obj = AppContext(config=config, console=Console(no_color=no_color))
     if ctx.invoked_subcommand is None:
         _interactive_menu(ctx)
-
-
-def _confirm_exact_path(root: str | Path, prompt_key: str = "confirm.delete") -> bool:
-    resolved = str(Path(root).expanduser().resolve())
-    entered = typer.prompt(f"{tr(prompt_key)} ({resolved})", default="", show_default=False)
-    return entered == resolved
-
-
-def _save_and_remember(state: AppContext, root: Path) -> None:
-    remember_root(state.config, root)
-    save_config(state.config)
-
-
-def _save_requested_preset(state: AppContext, options: DownloadOptions) -> None:
-    if not options.save_preset:
-        return
-    existing = state.config.get("presets", {})
-    if (
-        options.replace_preset
-        and options.save_preset in existing
-        and not typer.confirm(tr("preset.replace_confirm", name=options.save_preset), default=False)
-    ):
-        state.console.print(f"[yellow]{tr('common.cancelled')}[/yellow]")
-        raise typer.Exit()
-    save_preset(
-        state.config,
-        options.save_preset,
-        options.preset_values(),
-        replace=options.replace_preset,
-    )
-    save_config(state.config)
-    state.console.print(f"[green]{tr('preset.saved', name=options.save_preset)}[/green]")
-
-
-def _run_download(ctx: typer.Context, options: DownloadOptions) -> DownloadResult:
-    state = _state(ctx)
-    if options.adopt_existing and options.output and not _confirm_exact_path(options.output):
-        state.console.print(f"[yellow]{tr('common.cancelled')}[/yellow]")
-        raise typer.Exit()
-    if options.reset_cache:
-        target = options.output or "the resolved output folder"
-        if not typer.confirm(tr("download.reset_confirm", target=target), default=False):
-            state.console.print(f"[yellow]{tr('common.cancelled')}[/yellow]")
-            raise typer.Exit()
-    try:
-        _save_requested_preset(state, options)
-        defaults = state.config.get("defaults", {})
-        result = execute_download(options, defaults.get("output_parent", "."))
-        _save_and_remember(state, result.root)
-    except (OSError, KeyError, TypeError, ValueError) as exc:
-        _print_error(state.console, exc)
-        raise typer.Exit(2) from exc
-    if result.reviewed_skipped:
-        state.console.print(
-            f"[yellow]{tr('download.reviewed', count=result.reviewed_skipped)}[/yellow]"
-        )
-    if options.preview:
-        state.console.print(
-            tr(
-                "download.preview",
-                download=result.preview_downloads,
-                cached=result.preview_cached,
-            )
-        )
-    state.console.print(f"[green]{tr('download.complete', root=result.root)}[/green]")
-    return result
-
-
-@download_app.command("wporg")
-def download_wporg(
-    ctx: typer.Context,
-    installs: str = typer.Option("10K", help="Install tier or threshold."),
-    minimum: bool = typer.Option(False, "--minimum", help="Use installs as a minimum threshold."),
-    browse: str = typer.Option("popular", help="popular, new, updated, or top-rated."),
-    pages: int = typer.Option(50, min=1, help="Maximum API pages, 100 plugins per page."),
-    search: str | None = typer.Option(None, help="Search keyword."),
-    tag: str | None = typer.Option(None, help="WordPress.org tag."),
-    max_age_years: int = typer.Option(2, min=0, help="Maximum plugin age; 0 disables the filter."),
-    since: str | None = typer.Option(None, help="Updated on or after YYYY-MM-DD."),
-    limit: int | None = typer.Option(None, min=1, help="Maximum selected plugins."),
-    output: str | None = typer.Option(None, help="Output folder."),
-    workers: int = typer.Option(3, min=1, max=5, help="Parallel download workers."),
-    api_workers: int = typer.Option(5, min=1, max=10, help="Parallel API workers."),
-    max_download_mb: int = typer.Option(512, min=1, help="Maximum archive size."),
-    preview: bool = typer.Option(False, help="Collect and show the plan without downloading."),
-    metadata_only: bool = typer.Option(False, help="Export metadata without downloading."),
-    force: bool = typer.Option(False, help="Ignore the download cache."),
-    update_check: bool = typer.Option(False, help="Download newer releases."),
-    revisit_reviewed: bool = typer.Option(False, help="Include unchanged reviewed releases."),
-    no_global_dedup: bool = typer.Option(False, help="Disable sibling-folder deduplication."),
-    reset_cache: bool = typer.Option(False, help="Clear this output root's download cache."),
-    adopt_existing: bool = typer.Option(False, help="Adopt an existing non-empty output folder."),
-    save_preset_name: str | None = typer.Option(
-        None, "--save-preset", help="Save safe options as a preset."
-    ),
-    replace_preset: bool = typer.Option(False, help="Replace an existing user preset."),
-) -> None:
-    browse_mode = as_browse_mode(browse)
-    if browse_mode is None:
-        raise typer.BadParameter("--browse must be popular, new, updated, or top-rated")
-    if since:
-        _validate_date(since)
-    _run_download(
-        ctx,
-        DownloadOptions(
-            source="wporg",
-            installs=installs,
-            installs_mode="minimum" if minimum else "exact",
-            browse=browse_mode,
-            pages=pages,
-            search=search,
-            tag=tag,
-            max_age_years=max_age_years,
-            since=since,
-            limit=limit,
-            output=output,
-            workers=workers,
-            api_workers=api_workers,
-            max_download_mb=max_download_mb,
-            preview=preview,
-            metadata_only=metadata_only,
-            force=force,
-            update_check=update_check,
-            revisit_reviewed=revisit_reviewed,
-            global_dedup=not no_global_dedup,
-            reset_cache=reset_cache,
-            adopt_existing=adopt_existing,
-            save_preset=save_preset_name,
-            replace_preset=replace_preset,
-        ),
-    )
-
-
-@download_app.command("patchstack")
-def download_patchstack(
-    ctx: typer.Context,
-    min_boost: int = typer.Option(0, min=0, help="Minimum Patchstack bounty boost."),
-    include_themes: bool = typer.Option(False, help="Include themes."),
-    max_age_years: int = typer.Option(2, min=0, help="Maximum asset age; 0 disables the filter."),
-    since: str | None = typer.Option(None, help="Updated on or after YYYY-MM-DD."),
-    limit: int | None = typer.Option(None, min=1, help="Maximum selected assets."),
-    output: str | None = typer.Option(None, help="Output folder."),
-    workers: int = typer.Option(3, min=1, max=5, help="Parallel download workers."),
-    api_workers: int = typer.Option(5, min=1, max=10, help="Parallel API workers."),
-    max_download_mb: int = typer.Option(512, min=1, help="Maximum archive size."),
-    preview: bool = typer.Option(False, help="Collect and show the plan without downloading."),
-    metadata_only: bool = typer.Option(False, help="Export metadata without downloading."),
-    force: bool = typer.Option(False, help="Ignore the download cache."),
-    update_check: bool = typer.Option(False, help="Download newer releases."),
-    revisit_reviewed: bool = typer.Option(False, help="Include unchanged reviewed releases."),
-    no_global_dedup: bool = typer.Option(False, help="Disable sibling-folder deduplication."),
-    reset_cache: bool = typer.Option(False, help="Clear this output root's download cache."),
-    adopt_existing: bool = typer.Option(False, help="Adopt an existing non-empty output folder."),
-    save_preset_name: str | None = typer.Option(
-        None, "--save-preset", help="Save safe options as a preset."
-    ),
-    replace_preset: bool = typer.Option(False, help="Replace an existing user preset."),
-) -> None:
-    if since:
-        _validate_date(since)
-    _run_download(
-        ctx,
-        DownloadOptions(
-            source="patchstack",
-            min_boost=min_boost,
-            include_themes=include_themes,
-            max_age_years=max_age_years,
-            since=since,
-            limit=limit,
-            output=output,
-            workers=workers,
-            api_workers=api_workers,
-            max_download_mb=max_download_mb,
-            preview=preview,
-            metadata_only=metadata_only,
-            force=force,
-            update_check=update_check,
-            revisit_reviewed=revisit_reviewed,
-            global_dedup=not no_global_dedup,
-            reset_cache=reset_cache,
-            adopt_existing=adopt_existing,
-            save_preset=save_preset_name,
-            replace_preset=replace_preset,
-        ),
-    )
 
 
 @app.command("scan", help="Scan an output folder / Pindai folder output.")
@@ -328,247 +115,21 @@ def scan(
                 allow_unmarked=allow_unmarked,
             )
         )
-        _save_and_remember(state, resolved)
+        cli_context.save_and_remember(state, resolved)
     except (OSError, TypeError, ValueError) as exc:
         _print_error(state.console, exc)
         raise typer.Exit(2) from exc
     state.console.print(f"[green]{tr('scan.complete', root=resolved)}[/green]")
 
 
-@app.command("status", help="Show output status / Tampilkan status output.")
-def status_command(
-    ctx: typer.Context,
-    root: str | None = typer.Argument(None, help="Output folder; defaults to the most recent."),
-    all_roots: bool = typer.Option(False, "--all", help="Show all remembered output roots."),
-) -> None:
-    state = _state(ctx)
-    roots = list(state.config.get("recent_roots", []))
-    selected = roots if all_roots else ([root] if root else roots[:1])
-    if not selected:
-        state.console.print(f"[yellow]{tr('status.no_roots')}[/yellow]")
-        return
-    table = Table(title=tr("status.title"))
-    for column in tr("status.columns").split("|"):
-        table.add_column(column)
-    for item in selected:
-        try:
-            status = inspect_root(item)
-        except (OSError, TypeError, ValueError) as exc:
-            _print_error(state.console, exc)
-            continue
-        table.add_row(
-            str(status.root),
-            str(status.downloaded),
-            str(status.present),
-            str(status.removed),
-            str(status.reviewed),
-            str(status.scan_candidates),
-            str(status.scan_errors),
-            status.last_scan or "-",
-        )
-    state.console.print(table)
-
-
-@app.command("doctor", help="Check runtime setup / Periksa konfigurasi runtime.")
-def doctor(ctx: typer.Context, semgrep: str | None = None, rules: str | None = None) -> None:
-    state = _state(ctx)
-    state.console.print(Panel(tr("doctor.title")))
-    core.cmd_check(semgrep, rules, language=get_language())
-
-
-@app.command("watch", help="Watch popular plugins for updates / Pantau update plugin populer.")
-def watch(
-    ctx: typer.Context,
-    installs: str | None = typer.Option(
-        None, help="Minimum installs, e.g. 100K or 1M. Default: no minimum."
-    ),
-    limit: int = typer.Option(5, min=1, help="API pages to scan (~100 plugins each)."),
-    interval: int = typer.Option(3600, min=60, help="Seconds between checks in --daemon mode."),
-    daemon: bool = typer.Option(False, help="Keep running and re-check every --interval seconds."),
-    dry_run: bool = typer.Option(
-        False, help="Report updates without recording state or notifying."
-    ),
-    no_notify: bool = typer.Option(
-        False, "--no-notify", help="Print to stderr instead of Telegram."
-    ),
-) -> None:
-    state = _state(ctx)
-    try:
-        target_installs = parse_installs(installs) if installs else 0
-    except ValueError as exc:
-        _print_error(state.console, exc)
-        raise typer.Exit(2) from exc
-
-    def once() -> bool:
-        report, result = watch_module.run_watch(
-            target_installs=target_installs,
-            max_pages=limit,
-            dry_run=dry_run,
-            notify=not no_notify,
-        )
-        if report.has_changes:
-            state.console.print(f"[green]{tr('watch.changed', count=len(report.updated))}[/green]")
-        else:
-            state.console.print(f"[dim]{tr('watch.unchanged', count=report.checked)}[/dim]")
-        if result is not None:
-            if result.skipped_reason:
-                state.console.print(f"[yellow]{result.skipped_reason}[/yellow]")
-            for error in result.errors:
-                _print_error(state.console, error)
-            if result.delivered:
-                state.console.print(
-                    f"[green]{tr('watch.notified', count=result.delivered)}[/green]"
-                )
-            if not result.ok:
-                return False
-        return True
-
-    if not daemon:
-        raise typer.Exit(0 if once() else 2)
-    stop = threading.Event()
-
-    def _request_stop(_signum: int, _frame: object) -> None:
-        stop.set()
-
-    for signal_name in ("SIGINT", "SIGTERM"):
-        handler = getattr(signal, signal_name, None)
-        if handler is not None:
-            signal.signal(handler, _request_stop)
-    while not stop.is_set():
-        once()
-        stop.wait(interval)
-    state.console.print(f"[yellow]{tr('common.cancelled')}[/yellow]")
-    raise typer.Exit(0)
-
-
-@preset_app.command("list")
-def preset_list(ctx: typer.Context) -> None:
-    state = _state(ctx)
-    table = Table(title="Presets")
-    for column in tr("preset.columns").split("|"):
-        table.add_column(column)
-    for name, (values, builtin) in sorted(all_presets(state.config).items()):
-        details = ", ".join(f"{key}={value}" for key, value in values.items() if key != "source")
-        table.add_row(
-            name,
-            tr("preset.builtin") if builtin else tr("preset.user"),
-            str(values["source"]),
-            details,
-        )
-    state.console.print(table)
-
-
-@preset_app.command("show")
-def preset_show(ctx: typer.Context, name: str) -> None:
-    state = _state(ctx)
-    try:
-        values, builtin = get_preset(state.config, name)
-    except (KeyError, ValueError) as exc:
-        _print_error(state.console, tr("preset.missing", name=name))
-        raise typer.Exit(2) from exc
-    state.console.print_json(json.dumps({"name": name, "built_in": builtin, "options": values}))
-
-
-@preset_app.command("run")
-def preset_run(
-    ctx: typer.Context,
-    name: str,
-    preview: bool = typer.Option(False, help="Preview without downloading."),
-    output: str | None = typer.Option(None, help="Override output folder."),
-) -> None:
-    state = _state(ctx)
-    try:
-        values, _builtin = get_preset(state.config, name)
-        values["preview"] = preview
-        if output:
-            values["output"] = output
-        options = DownloadOptions(**values)
-    except (KeyError, TypeError, ValueError) as exc:
-        _print_error(
-            state.console, tr("preset.missing", name=name) if isinstance(exc, KeyError) else exc
-        )
-        raise typer.Exit(2) from exc
-    _run_download(ctx, options)
-
-
-@preset_app.command("delete")
-def preset_delete(ctx: typer.Context, name: str, yes: bool = typer.Option(False, "--yes")) -> None:
-    state = _state(ctx)
-    if name in BUILTIN_PRESETS:
-        _print_error(state.console, f"Built-in preset {name!r} is immutable")
-        raise typer.Exit(2)
-    presets = state.config.get("presets", {})
-    if name not in presets:
-        _print_error(state.console, tr("preset.missing", name=name))
-        raise typer.Exit(2)
-    if not yes and not typer.confirm(tr("preset.delete_confirm", name=name), default=False):
-        state.console.print(f"[yellow]{tr('common.cancelled')}[/yellow]")
-        return
-    del presets[name]
-    save_config(state.config)
-    state.console.print(f"[green]{tr('preset.deleted', name=name)}[/green]")
-
-
-@config_app.command("show")
-def config_show(ctx: typer.Context) -> None:
-    _state(ctx).console.print_json(json.dumps(_state(ctx).config))
-
-
-@config_app.command("set")
-def config_set(ctx: typer.Context, key: str, value: str) -> None:
-    state = _state(ctx)
-    if key == "language":
-        if value not in {"en", "id"}:
-            raise typer.BadParameter("language must be en or id")
-        state.config["language"] = value
-        set_language(value)
-    elif key == "output_parent":
-        state.config.setdefault("defaults", {})[key] = value
-    elif key in {
-        "download_workers",
-        "api_workers",
-        "scan_workers",
-        "scan_timeout",
-        "scan_mem_mb",
-        "max_age_years",
-        "download_limit",
-    }:
-        try:
-            numeric = int(value)
-        except ValueError as exc:
-            raise typer.BadParameter(f"{key} must be an integer") from exc
-        nonnegative = {"max_age_years", "download_limit"}
-        if key not in nonnegative and numeric < 1:
-            raise typer.BadParameter(f"{key} must be greater than zero")
-        if key in nonnegative and numeric < 0:
-            raise typer.BadParameter(f"{key} cannot be negative")
-        state.config.setdefault("defaults", {})[key] = numeric
-    else:
-        raise typer.BadParameter("Unsupported key")
-    path = save_config(state.config)
-    state.console.print(f"[green]{tr('config.saved', path=path)}[/green]")
-
-
-@config_app.command("reset")
-def config_reset(ctx: typer.Context, yes: bool = typer.Option(False, "--yes")) -> None:
-    state = _state(ctx)
-    if not yes and not typer.confirm(tr("config.reset_confirm"), default=False):
-        state.console.print(f"[yellow]{tr('common.cancelled')}[/yellow]")
-        return
-    state.config = default_config()
-    save_config(state.config)
-    set_language("en")
-    state.console.print(f"[green]{tr('config.reset')}[/green]")
-
-
 def _interactive_menu(ctx: typer.Context) -> None:
     cli_menu.interactive_menu(
         ctx,
         _state(ctx),
-        run_download=_run_download,
+        run_download=cli_download.run_download,
         scan_command=scan,
-        status_command=status_command,
-        doctor_command=doctor,
+        status_command=cli_commands.status_command,
+        doctor_command=cli_commands.doctor,
     )
 
 

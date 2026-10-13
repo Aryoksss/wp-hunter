@@ -22,6 +22,7 @@
   "watch.changed": "{count} plugin update(s) found.",
   "watch.unchanged": "No updates across {count} plugin(s).",
   "watch.notified": "Sent {count} Telegram message(s).",
+  "watch.vulnerable": "{count} plugin(s) have known vulnerabilities.",
   "status.no_roots": "No recent WP Hunter output folders are configured.",
   "status.title": "WP Hunter Status",
   "status.columns": "Root|Downloaded|Present|Removed|Reviewed|Candidates|Errors|Last scan",

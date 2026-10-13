@@ -1,0 +1,91 @@
+from __future__ import annotations
+
+import signal
+import threading
+
+import typer
+
+from . import watch as watch_module
+from .cli_context import AppContext, print_error
+from .i18n import tr
+from .installs import parse_installs_input as parse_installs
+
+
+def register(app: typer.Typer) -> None:
+    app.command("watch", help="Watch popular plugins for updates / Pantau update plugin populer.")(
+        watch
+    )
+
+
+def watch(
+    ctx: typer.Context,
+    installs: str | None = typer.Option(
+        None, help="Minimum installs, e.g. 100K or 1M. Default: no minimum."
+    ),
+    limit: int = typer.Option(5, min=1, help="API pages to scan (~100 plugins each)."),
+    interval: int = typer.Option(3600, min=60, help="Seconds between checks in --daemon mode."),
+    daemon: bool = typer.Option(False, help="Keep running and re-check every --interval seconds."),
+    vuln: bool = typer.Option(
+        False, help="Also check WPScan for known vulnerabilities (needs WPSCAN_API_TOKEN)."
+    ),
+    dry_run: bool = typer.Option(
+        False, help="Report updates without recording state or notifying."
+    ),
+    no_notify: bool = typer.Option(
+        False, "--no-notify", help="Print to stderr instead of Telegram."
+    ),
+) -> None:
+    context: AppContext = ctx.find_root().obj
+    try:
+        target_installs = parse_installs(installs) if installs else 0
+    except ValueError as exc:
+        print_error(context.console, exc)
+        raise typer.Exit(2) from exc
+
+    def once() -> bool:
+        report, result = watch_module.run_watch(
+            target_installs=target_installs,
+            max_pages=limit,
+            dry_run=dry_run,
+            notify=not no_notify,
+            check_vulnerabilities=vuln,
+        )
+        if report.has_changes:
+            context.console.print(
+                f"[green]{tr('watch.changed', count=len(report.updated))}[/green]"
+            )
+        else:
+            context.console.print(f"[dim]{tr('watch.unchanged', count=report.checked)}[/dim]")
+        if report.vulnerable:
+            context.console.print(
+                f"[bold red]{tr('watch.vulnerable', count=len(report.vulnerable))}[/bold red]"
+            )
+        if result is not None:
+            if result.skipped_reason:
+                context.console.print(f"[yellow]{result.skipped_reason}[/yellow]")
+            for error in result.errors:
+                print_error(context.console, error)
+            if result.delivered:
+                context.console.print(
+                    f"[green]{tr('watch.notified', count=result.delivered)}[/green]"
+                )
+            if not result.ok:
+                return False
+        return True
+
+    if not daemon:
+        raise typer.Exit(0 if once() else 2)
+    stop = threading.Event()
+
+    def _request_stop(_signum: int, _frame: object) -> None:
+        stop.set()
+
+    for signal_name in ("SIGINT", "SIGTERM"):
+        handler = getattr(signal, signal_name, None)
+        if handler is not None:
+            signal.signal(handler, _request_stop)
+    while not stop.is_set():
+        once()
+        stop.wait(interval)
+    context.console.print(f"[yellow]{tr('common.cancelled')}[/yellow]")
+    raise typer.Exit(0)

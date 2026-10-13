@@ -130,7 +130,26 @@ wp-hunter watch --installs 100K --limit 5
 
 # See what changed without recording state or notifying
 wp-hunter watch --dry-run --no-notify
+
+# Also alert on known vulnerabilities (needs a free WPScan token)
+wp-hunter watch --vuln
 ```
+
+### Vulnerability alerts (optional)
+
+With `--vuln`, `watch` also queries the [WPScan](https://wpscan.com/) database
+for known vulnerabilities and flags plugins whose **current** version is
+affected (an advisory with no published fix counts for every version). A free
+WPScan API token is required; set it in the environment:
+
+```bash
+export WPSCAN_API_TOKEN="your-token"
+wp-hunter watch --vuln --limit 5
+```
+
+WPScan's free tier has a daily request quota; when it runs out, `watch` stops
+further checks and reports it instead of failing. Without a token, `--vuln`
+prints a warning and continues with update checks only.
 
 ### Telegram notifications
 
@@ -184,7 +203,8 @@ journalctl -u wp-hunter-watch -f
 ```
 
 `--interval` is in seconds (minimum 60). The daemon also stops on Ctrl+C when
-run in a foreground terminal.
+run in a foreground terminal. Add `--vuln` and `WPSCAN_API_TOKEN` to a service
+or cron line if you also want vulnerability alerts.
 
 ## Presets
 
@@ -256,11 +276,14 @@ python -m unittest discover -s tests -v
 python -m build
 ```
 
-The package is organized into a thin `cli`/`cli_menu`/`config`/`i18n` front end,
-application `services`, a `triage/` package (`engine`, `report`, `runner`), and
-focused support modules for state and migration, archive safety, Semgrep
-adaptation, path/security helpers, download and export, plugin update watching
-with Telegram delivery, and source collectors under a shared pooled HTTP client.
+The package is organized into a thin `cli` entrypoint that registers focused
+command modules (`cli_download`, `cli_commands`, `cli_presets`, `cli_config`,
+`cli_watch`) over a shared `cli_context`, plus `cli_menu`/`config`/`i18n`
+front-end modules, application `services`, a `triage/` package (`engine`,
+`report`, `runner`), and focused support modules for state and migration,
+archive safety, Semgrep adaptation, path/security helpers, download and export,
+plugin update watching with optional WPScan vulnerability alerts and Telegram
+delivery, and source collectors under a shared pooled HTTP client.
 Comments are intentionally limited to public contracts and non-obvious security
 rationale.
 

@@ -22,6 +22,7 @@
   "watch.changed": "Ditemukan {count} pembaruan plugin.",
   "watch.unchanged": "Tidak ada pembaruan dari {count} plugin.",
   "watch.notified": "Mengirim {count} pesan Telegram.",
+  "watch.vulnerable": "{count} plugin memiliki kerentanan yang diketahui.",
   "status.no_roots": "Belum ada folder output WP Hunter yang tersimpan.",
   "status.title": "Status WP Hunter",
   "status.columns": "Root|Diunduh|Tersedia|Dihapus|Ditinjau|Kandidat|Kesalahan|Scan terakhir",

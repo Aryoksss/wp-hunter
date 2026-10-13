@@ -129,7 +129,26 @@ wp-hunter watch --installs 100K --limit 5
 
 # Lihat perubahan tanpa mencatat state dan tanpa notifikasi
 wp-hunter watch --dry-run --no-notify
+
+# Sekaligus beri alert kerentanan yang diketahui (butuh token WPScan gratis)
+wp-hunter watch --vuln
 ```
+
+### Alert kerentanan (opsional)
+
+Dengan `--vuln`, `watch` juga menanyakan database [WPScan](https://wpscan.com/)
+untuk kerentanan yang diketahui, lalu menandai plugin yang **versi saat ini**
+terdampak (advisory tanpa perbaikan dianggap berlaku untuk semua versi). Butuh
+token API WPScan gratis; set di environment:
+
+```bash
+export WPSCAN_API_TOKEN="token-anda"
+wp-hunter watch --vuln --limit 5
+```
+
+Tier gratis WPScan punya kuota harian; bila habis, `watch` menghentikan
+pemeriksaan lanjutan dan melaporkannya, bukan gagal. Tanpa token, `--vuln`
+mencetak peringatan dan lanjut hanya dengan cek update.
 
 ### Notifikasi Telegram
 
@@ -183,7 +202,8 @@ journalctl -u wp-hunter-watch -f
 ```
 
 `--interval` dalam detik (minimum 60). Daemon juga berhenti dengan Ctrl+C saat
-dijalankan di terminal.
+dijalankan di terminal. Tambahkan `--vuln` dan `WPSCAN_API_TOKEN` ke service
+atau cron bila juga ingin alert kerentanan.
 
 ## Preset
 
@@ -238,10 +258,13 @@ python -m unittest discover -s tests -v
 python -m build
 ```
 
-Paket dipecah menjadi front end tipis `cli`/`cli_menu`/`config`/`i18n`, lapisan
-`services`, paket `triage/` (`engine`, `report`, `runner`), serta modul pendukung
-terfokus untuk state dan migrasi, keamanan arsip, adaptor Semgrep, helper
-path/keamanan, download dan export, pemantauan update plugin dengan pengiriman
+Paket dipecah menjadi entrypoint `cli` tipis yang mendaftarkan modul command
+terfokus (`cli_download`, `cli_commands`, `cli_presets`, `cli_config`,
+`cli_watch`) di atas `cli_context` bersama, ditambah modul front end
+`cli_menu`/`config`/`i18n`, lapisan `services`, paket `triage/` (`engine`,
+`report`, `runner`), serta modul pendukung terfokus untuk state dan migrasi,
+keamanan arsip, adaptor Semgrep, helper path/keamanan, download dan export,
+pemantauan update plugin dengan alert kerentanan WPScan opsional dan pengiriman
 Telegram, dan kolektor sumber di atas HTTP client terpool. Komentar sengaja
 dibatasi pada kontrak publik dan alasan keamanan yang tidak jelas dari kodenya.
 

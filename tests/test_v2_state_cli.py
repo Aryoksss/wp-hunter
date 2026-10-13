@@ -109,7 +109,7 @@ class V2CliTests(unittest.TestCase):
                     "wp_hunter.cli_menu.questionary.confirm",
                     side_effect=[minimum, preview],
                 ),
-                patch("wp_hunter.cli._run_download") as run_download,
+                patch("wp_hunter.cli_download.run_download") as run_download,
             ):
                 result = CliRunner().invoke(app, [], env={"WP_HUNTER_CONFIG_DIR": temp_name})
 
@@ -156,7 +156,7 @@ class V2CliTests(unittest.TestCase):
                 "targets",
                 "--replace-preset",
             ]
-            with patch("wp_hunter.cli.execute_download", return_value=download_result):
+            with patch("wp_hunter.cli_download.execute_download", return_value=download_result):
                 cancelled = CliRunner().invoke(
                     app,
                     arguments,
@@ -180,7 +180,7 @@ class V2CliTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_name:
             root = Path(temp_name) / "output"
             result = DownloadResult(root=root, collected=0, selected=0, reviewed_skipped=0)
-            with patch("wp_hunter.cli.execute_download", return_value=result):
+            with patch("wp_hunter.cli_download.execute_download", return_value=result):
                 invocation = CliRunner().invoke(
                     app,
                     [
