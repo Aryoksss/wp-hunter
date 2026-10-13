@@ -1,7 +1,9 @@
 import contextlib
 import io
 import shutil
+import sys
 import tempfile
+import types
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -11,8 +13,12 @@ from wp_hunter import doctor
 
 class SafeTriageWorkersTests(unittest.TestCase):
     def _with_memory(self, available_mb: int):
+        # psutil is an optional extra; inject a stub so the patch resolves
+        # whether or not it is installed.
         memory = type("Mem", (), {"available": available_mb * 1024 * 1024})()
-        return patch("psutil.virtual_memory", return_value=memory)
+        stub = types.ModuleType("psutil")
+        stub.virtual_memory = lambda: memory  # type: ignore[attr-defined]
+        return patch.dict(sys.modules, {"psutil": stub})
 
     def test_request_below_limit_is_unchanged(self):
         with self._with_memory(64 * 1024):
