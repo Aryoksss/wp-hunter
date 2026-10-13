@@ -19,3 +19,7 @@ def session() -> requests.Session:
 
 def get(url: str, **kwargs):
     return session().get(url, **kwargs)
+
+
+def post(url: str, **kwargs):
+    return session().post(url, **kwargs)

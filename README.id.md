@@ -106,11 +106,84 @@ Nama command dan flag tetap menggunakan English pada kedua bahasa.
 | `wp-hunter download patchstack` | Mengumpulkan plugin/theme Patchstack VDP |
 | `wp-hunter scan DIR` | Triage Semgrep report-only atau cleanup terkonfirmasi |
 | `wp-hunter status [DIR]` | Ringkasan download, review, penghapusan, dan hasil scan |
+| `wp-hunter watch` | Memantau update versi plugin populer dan notifikasi ke Telegram |
 | `wp-hunter doctor` | Memeriksa Python, requests, Semgrep, rule, dan disk |
 | `wp-hunter preset ...` | Melihat, menjalankan, atau menghapus preset workflow |
 | `wp-hunter config ...` | Melihat dan mengubah preferensi pengguna |
 
 Gunakan `wp-hunter COMMAND --help` untuk melihat seluruh opsi.
+
+## Pantau update plugin
+
+`wp-hunter watch` memeriksa daftar plugin populer WordPress.org, membandingkan
+versi tiap plugin dengan versi terakhir yang dicatat, lalu melaporkan yang
+berubah. State disimpan di `watch_state.json` di folder config WP Hunter,
+sehingga run berikutnya hanya melaporkan perubahan nyata.
+
+```bash
+# Sekali jalan untuk ~500 plugin populer teratas, kirim ke Telegram bila berubah
+wp-hunter watch --limit 5
+
+# Hanya plugin dengan minimal 100K instalasi
+wp-hunter watch --installs 100K --limit 5
+
+# Lihat perubahan tanpa mencatat state dan tanpa notifikasi
+wp-hunter watch --dry-run --no-notify
+```
+
+### Notifikasi Telegram
+
+Kredensial diambil dari environment variable; tidak ada yang ditulis ke file config:
+
+```bash
+export TELEGRAM_BOT_TOKEN="123456:ABC-DEF..."
+export TELEGRAM_CHAT_ID="987654321"
+```
+
+Buat bot lewat [@BotFather](https://t.me/BotFather) untuk mendapat token. Untuk
+mencari chat ID, kirim pesan ke bot lalu buka
+`https://api.telegram.org/bot<TOKEN>/getUpdates`. Bila salah satu variable belum
+diset, `watch` mencetak ringkasan ke stderr, bukan gagal.
+
+### Deploy 24/7 di VPS
+
+**Opsi 1 — cron (paling sederhana).** Jalankan sekali tiap 30 menit:
+
+```cron
+*/30 * * * * TELEGRAM_BOT_TOKEN=... TELEGRAM_CHAT_ID=... /usr/local/bin/wp-hunter watch --limit 10 >>/var/log/wp-hunter-watch.log 2>&1
+```
+
+**Opsi 2 — service systemd.** Daemon tetap hidup dan memeriksa ulang tiap
+`--interval` detik, serta berhenti bersih saat menerima `SIGTERM`.
+
+`/etc/systemd/system/wp-hunter-watch.service`:
+
+```ini
+[Unit]
+Description=WP Hunter plugin update watcher
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Environment=TELEGRAM_BOT_TOKEN=123456:ABC-DEF...
+Environment=TELEGRAM_CHAT_ID=987654321
+ExecStart=/usr/local/bin/wp-hunter watch --limit 10 --daemon --interval 3600
+Restart=on-failure
+RestartSec=30
+
+[Install]
+WantedBy=multi-user.target
+```
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now wp-hunter-watch
+systemctl status wp-hunter-watch
+journalctl -u wp-hunter-watch -f
+```
+
+`--interval` dalam detik (minimum 60). Daemon juga berhenti dengan Ctrl+C saat
+dijalankan di terminal.
 
 ## Preset
 
@@ -168,9 +241,9 @@ python -m build
 Paket dipecah menjadi front end tipis `cli`/`cli_menu`/`config`/`i18n`, lapisan
 `services`, paket `triage/` (`engine`, `report`, `runner`), serta modul pendukung
 terfokus untuk state dan migrasi, keamanan arsip, adaptor Semgrep, helper
-path/keamanan, download dan export, dan kolektor sumber di atas HTTP client
-terpool. Komentar sengaja dibatasi pada kontrak publik dan alasan keamanan yang
-tidak jelas dari kodenya.
+path/keamanan, download dan export, pemantauan update plugin dengan pengiriman
+Telegram, dan kolektor sumber di atas HTTP client terpool. Komentar sengaja
+dibatasi pada kontrak publik dan alasan keamanan yang tidak jelas dari kodenya.
 
 ### Rilis
 

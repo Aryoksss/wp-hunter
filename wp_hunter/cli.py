@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import signal
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -10,6 +12,7 @@ from rich.panel import Panel
 from rich.table import Table
 
 from . import __version__, cli_menu, core
+from . import watch as watch_module
 from .config import (
     BUILTIN_PRESETS,
     all_presets,
@@ -21,6 +24,7 @@ from .config import (
     save_preset,
 )
 from .i18n import get_language, set_language, tr
+from .installs import parse_installs_input as parse_installs
 from .models import DownloadOptions, ScanOptions
 from .services import DownloadResult, execute_download, execute_scan
 from .status import inspect_root
@@ -370,6 +374,71 @@ def doctor(ctx: typer.Context, semgrep: str | None = None, rules: str | None = N
     state = _state(ctx)
     state.console.print(Panel(tr("doctor.title")))
     core.cmd_check(semgrep, rules, language=get_language())
+
+
+@app.command("watch", help="Watch popular plugins for updates / Pantau update plugin populer.")
+def watch(
+    ctx: typer.Context,
+    installs: str | None = typer.Option(
+        None, help="Minimum installs, e.g. 100K or 1M. Default: no minimum."
+    ),
+    limit: int = typer.Option(5, min=1, help="API pages to scan (~100 plugins each)."),
+    interval: int = typer.Option(3600, min=60, help="Seconds between checks in --daemon mode."),
+    daemon: bool = typer.Option(False, help="Keep running and re-check every --interval seconds."),
+    dry_run: bool = typer.Option(
+        False, help="Report updates without recording state or notifying."
+    ),
+    no_notify: bool = typer.Option(
+        False, "--no-notify", help="Print to stderr instead of Telegram."
+    ),
+) -> None:
+    state = _state(ctx)
+    try:
+        target_installs = parse_installs(installs) if installs else 0
+    except ValueError as exc:
+        _print_error(state.console, exc)
+        raise typer.Exit(2) from exc
+
+    def once() -> bool:
+        report, result = watch_module.run_watch(
+            target_installs=target_installs,
+            max_pages=limit,
+            dry_run=dry_run,
+            notify=not no_notify,
+        )
+        if report.has_changes:
+            state.console.print(f"[green]{tr('watch.changed', count=len(report.updated))}[/green]")
+        else:
+            state.console.print(f"[dim]{tr('watch.unchanged', count=report.checked)}[/dim]")
+        if result is not None:
+            if result.skipped_reason:
+                state.console.print(f"[yellow]{result.skipped_reason}[/yellow]")
+            for error in result.errors:
+                _print_error(state.console, error)
+            if result.delivered:
+                state.console.print(
+                    f"[green]{tr('watch.notified', count=result.delivered)}[/green]"
+                )
+            if not result.ok:
+                return False
+        return True
+
+    if not daemon:
+        raise typer.Exit(0 if once() else 2)
+    stop = threading.Event()
+
+    def _request_stop(_signum: int, _frame: object) -> None:
+        stop.set()
+
+    for signal_name in ("SIGINT", "SIGTERM"):
+        handler = getattr(signal, signal_name, None)
+        if handler is not None:
+            signal.signal(handler, _request_stop)
+    while not stop.is_set():
+        once()
+        stop.wait(interval)
+    state.console.print(f"[yellow]{tr('common.cancelled')}[/yellow]")
+    raise typer.Exit(0)
 
 
 @preset_app.command("list")

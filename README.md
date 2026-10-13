@@ -107,11 +107,84 @@ Command and option names remain English in both languages.
 | `wp-hunter download patchstack` | Collect Patchstack VDP plugins and themes |
 | `wp-hunter scan DIR` | Run report-only or explicitly confirmed Semgrep triage |
 | `wp-hunter status [DIR]` | Summarize downloads, removed releases, reviews, and scan results |
+| `wp-hunter watch` | Watch popular plugins for version updates and notify Telegram |
 | `wp-hunter doctor` | Check Python, requests, Semgrep, rules, and disk space |
 | `wp-hunter preset ...` | List, inspect, run, or delete workflow presets |
 | `wp-hunter config ...` | Show, update, or reset user preferences |
 
 Run `wp-hunter COMMAND --help` for every option.
+
+## Watch for plugin updates
+
+`wp-hunter watch` polls the WordPress.org popular listings, compares each
+plugin's current version against the last one it recorded, and reports the ones
+that changed. State lives in `watch_state.json` under the WP Hunter config
+directory, so repeated runs only report real changes.
+
+```bash
+# One pass over the top ~500 popular plugins, Telegram on changes
+wp-hunter watch --limit 5
+
+# Only plugins with at least 100K installs
+wp-hunter watch --installs 100K --limit 5
+
+# See what changed without recording state or notifying
+wp-hunter watch --dry-run --no-notify
+```
+
+### Telegram notifications
+
+Credentials come from the environment; nothing is written to the config file:
+
+```bash
+export TELEGRAM_BOT_TOKEN="123456:ABC-DEF..."
+export TELEGRAM_CHAT_ID="987654321"
+```
+
+Create a bot with [@BotFather](https://t.me/BotFather) to get the token. To find
+your chat ID, send the bot a message and read
+`https://api.telegram.org/bot<TOKEN>/getUpdates`. When either variable is unset,
+`watch` prints the digest to stderr instead of failing.
+
+### Deploy 24/7 on a VPS
+
+**Option 1 — cron (simplest).** Run one pass every 30 minutes:
+
+```cron
+*/30 * * * * TELEGRAM_BOT_TOKEN=... TELEGRAM_CHAT_ID=... /usr/local/bin/wp-hunter watch --limit 10 >>/var/log/wp-hunter-watch.log 2>&1
+```
+
+**Option 2 — systemd service.** The daemon stays resident and re-checks every
+`--interval` seconds, and stops cleanly on `SIGTERM`.
+
+`/etc/systemd/system/wp-hunter-watch.service`:
+
+```ini
+[Unit]
+Description=WP Hunter plugin update watcher
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Environment=TELEGRAM_BOT_TOKEN=123456:ABC-DEF...
+Environment=TELEGRAM_CHAT_ID=987654321
+ExecStart=/usr/local/bin/wp-hunter watch --limit 10 --daemon --interval 3600
+Restart=on-failure
+RestartSec=30
+
+[Install]
+WantedBy=multi-user.target
+```
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now wp-hunter-watch
+systemctl status wp-hunter-watch
+journalctl -u wp-hunter-watch -f
+```
+
+`--interval` is in seconds (minimum 60). The daemon also stops on Ctrl+C when
+run in a foreground terminal.
 
 ## Presets
 
@@ -186,9 +259,10 @@ python -m build
 The package is organized into a thin `cli`/`cli_menu`/`config`/`i18n` front end,
 application `services`, a `triage/` package (`engine`, `report`, `runner`), and
 focused support modules for state and migration, archive safety, Semgrep
-adaptation, path/security helpers, download and export, and source collectors
-under a shared pooled HTTP client. Comments are intentionally limited to public
-contracts and non-obvious security rationale.
+adaptation, path/security helpers, download and export, plugin update watching
+with Telegram delivery, and source collectors under a shared pooled HTTP client.
+Comments are intentionally limited to public contracts and non-obvious security
+rationale.
 
 ### Releasing
 
