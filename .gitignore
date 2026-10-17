@@ -84,6 +84,9 @@ temp_*/
 # Agent tooling
 .omo/
 
+# Local secrets (keep .env.example tracked)
+.env
+
 # Large folders
 AAA/
 BBPress/

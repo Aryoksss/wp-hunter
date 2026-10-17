@@ -169,6 +169,12 @@ your chat ID, send the bot a message and read
 `https://api.telegram.org/bot<TOKEN>/getUpdates`. When either variable is unset,
 `watch` prints the digest to stderr instead of failing.
 
+Keep the values out of unit files. On a server, start from
+[`.env.example`](.env.example), put the file at `/etc/wp-hunter/watch.env` with
+mode `600`, and load it with `EnvironmentFile=` as the service examples below
+do. For local use, copy `.env.example` to `.env` (git-ignored) and export it
+with `set -a; . ./.env; set +a`.
+
 ### Deploy 24/7 on a VPS
 
 **Option 1 — cron (simplest).** Run one pass every 30 minutes:
@@ -189,8 +195,7 @@ After=network-online.target
 Wants=network-online.target
 
 [Service]
-Environment=TELEGRAM_BOT_TOKEN=123456:ABC-DEF...
-Environment=TELEGRAM_CHAT_ID=987654321
+EnvironmentFile=/etc/wp-hunter/watch.env
 ExecStart=/usr/local/bin/wp-hunter watch --limit 10 --daemon --interval 3600
 Restart=on-failure
 RestartSec=30
@@ -221,8 +226,7 @@ Description=WP Hunter plugin update watcher (one pass)
 
 [Service]
 Type=oneshot
-Environment=TELEGRAM_BOT_TOKEN=123456:ABC-DEF...
-Environment=TELEGRAM_CHAT_ID=987654321
+EnvironmentFile=/etc/wp-hunter/watch.env
 ExecStart=/usr/local/bin/wp-hunter watch --limit 10
 ```
 
