@@ -611,6 +611,32 @@ class WatchCommandTests(unittest.TestCase):
             )
         self.assertEqual(result.exit_code, 2, result.output)
 
+    def test_install_timer_without_limit_preserves_the_service_unit(self):
+        with (
+            tempfile.TemporaryDirectory() as tmp,
+            patch("wp_hunter.cli_watch.schedule.install_timer", return_value=[]) as install,
+        ):
+            result = CliRunner().invoke(
+                app,
+                ["watch", "--every", "2h", "--install-timer"],
+                env={"WP_HUNTER_CONFIG_DIR": tmp},
+            )
+        self.assertEqual(result.exit_code, 0, result.output)
+        # limit=None tells the installer to keep the operator's existing --limit.
+        install.assert_called_once_with(7200, limit=None)
+
+    def test_plain_run_defaults_to_five_pages(self):
+        with (
+            tempfile.TemporaryDirectory() as tmp,
+            patch(
+                "wp_hunter.cli_watch.watch_module.run_watch",
+                return_value=(WatchReport(checked=0), None),
+            ) as run,
+        ):
+            result = CliRunner().invoke(app, ["watch"], env={"WP_HUNTER_CONFIG_DIR": tmp})
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertEqual(run.call_args.kwargs["max_pages"], 5)
+
     def test_busy_lock_skips_the_pass_without_failing(self):
         with (
             tempfile.TemporaryDirectory() as tmp,

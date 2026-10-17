@@ -24,7 +24,9 @@ def watch(
     installs: str | None = typer.Option(
         None, help="Minimum installs, e.g. 100K or 1M. Default: no minimum."
     ),
-    limit: int = typer.Option(5, min=1, help="API pages to scan (~100 plugins each)."),
+    limit: int | None = typer.Option(
+        None, min=1, help="API pages to scan (~100 plugins each). Default: 5."
+    ),
     every: str | None = typer.Option(
         None,
         "--every",
@@ -77,7 +79,7 @@ def watch(
             with state_lock():
                 report, result = watch_module.run_watch(
                     target_installs=target_installs,
-                    max_pages=limit,
+                    max_pages=limit if limit is not None else 5,
                     dry_run=dry_run,
                     notify=not no_notify,
                     check_vulnerabilities=vuln,
