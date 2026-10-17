@@ -181,8 +181,10 @@ wp-hunter bot --once
 
 Perintah: `/time` menampilkan interval, `/time 2h` mengubahnya (dan mengaktifkan
 ulang timer bila bot berjalan sebagai root), `/status` melaporkan plugin
-terlacak, interval, dan jadwal berikutnya, `/run` memeriksa sekarang dan
-mengirim digest.
+terlacak, interval, halaman per run, dan jadwal berikutnya. `/run` memeriksa
+halaman sesuai konfigurasi lalu mengirim digest; `/run 100` memeriksa 100
+halaman (~10.000 plugin) dan `/run all` menelusuri seluruh direktori (dibatasi
+600 halaman). Atur defaultnya dengan `wp-hunter config set watch_pages 100`.
 
 Hanya satu proses yang boleh melakukan polling pada satu token bot. Bila webhook
 aktif untuk bot tersebut, `getUpdates` gagal dengan 409 — hapus dulu lewat

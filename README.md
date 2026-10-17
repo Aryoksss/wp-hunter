@@ -180,7 +180,10 @@ wp-hunter bot --once
 
 Commands: `/time` shows the interval, `/time 2h` changes it (and re-arms the
 timer when the bot runs as root), `/status` reports tracked plugins, the
-interval and the next run, `/run` checks now and sends the digest.
+interval, pages per run and the next run. `/run` checks the configured pages and
+sends the digest; `/run 100` checks 100 pages (~10,000 plugins) and `/run all`
+walks the whole directory (capped at 600 pages). Set the default with
+`wp-hunter config set watch_pages 100`.
 
 Only one process may poll a bot token at a time. If a webhook is configured for
 the bot, `getUpdates` fails with a 409 — delete it first with

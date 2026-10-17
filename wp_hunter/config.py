@@ -56,6 +56,7 @@ def default_config() -> dict[str, Any]:
             "max_age_years": 2,
             "download_limit": 0,
             "watch_every": "1h",
+            "watch_pages": 50,
         },
         "recent_roots": [],
         "presets": {},

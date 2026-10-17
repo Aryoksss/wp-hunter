@@ -38,6 +38,14 @@ def config_set(ctx: typer.Context, key: str, value: str) -> None:
         except ValueError as exc:
             raise typer.BadParameter(str(exc)) from exc
         context.config.setdefault("defaults", {})[key] = format_duration(seconds)
+    elif key == "watch_pages":
+        try:
+            pages = int(value)
+        except ValueError as exc:
+            raise typer.BadParameter("watch_pages must be an integer") from exc
+        if pages < 1 or pages > 600:
+            raise typer.BadParameter("watch_pages must be between 1 and 600")
+        context.config.setdefault("defaults", {})[key] = pages
     elif key in {
         "download_workers",
         "api_workers",

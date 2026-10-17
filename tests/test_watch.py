@@ -361,7 +361,8 @@ class WatchVulnerabilityTests(unittest.TestCase):
         self.assertTrue(report.has_changes)
         text = post.call_args.kwargs["json"]["text"]
         self.assertIn("Stored XSS", text)
-        self.assertIn("CVSS 4.1", text)
+        self.assertIn("4.1", text)
+        self.assertIn("🟡", text)
 
     def test_vuln_errors_are_collected(self):
         outcome = ScanOutcome(slug="elementor", error="HTTP 500")
@@ -433,7 +434,7 @@ class HeadlineTests(unittest.TestCase):
         )
         text = _headline(report, empty=False)
         self.assertIn("Partial scan: 1 listing page failed", text)
-        self.assertIn("updated 2026-10-04", text)
+        self.assertIn("2026-10-04", text)
         self.assertIn('<a href="https://wordpress.org/plugins/elementor/">', text)
 
     def test_empty_report_renders_nothing(self):

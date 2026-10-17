@@ -137,8 +137,38 @@ class CommandTests(BotTestCase):
         )
         with patch("wp_hunter.bot.watcher_busy", return_value=False):
             reply = bot.handle("/run")
-        self.assertEqual(self.notifier.sent, ["Checking now…"])
+        self.assertEqual(len(self.notifier.sent), 1)
+        self.assertIn("Scanning", self.notifier.sent[0])
         self.assertIn("https://wordpress.org/plugins/elementor/", reply)
+
+    def test_run_scope_comes_from_the_argument_or_the_config(self):
+        report = WatchReport(checked=0)
+        seen = []
+
+        def runner(**kwargs):
+            seen.append(kwargs["max_pages"])
+            return report, None
+
+        bot = TelegramBot(
+            "token",
+            "42",
+            config_path=self.config_path,
+            state_path=self.state_path,
+            offset_path=self.offset_path,
+            notifier=self.notifier,
+            watch_runner=runner,
+        )
+        with patch("wp_hunter.bot.watcher_busy", return_value=False):
+            bot.handle("/run")
+            bot.handle("/run 120")
+            bot.handle("/run all")
+            bot.handle("/run 5000")
+        self.assertEqual(seen, [50, 120, 600, 600])
+
+    def test_run_rejects_a_non_numeric_scope(self):
+        with patch("wp_hunter.bot.watcher_busy", return_value=False):
+            reply = self.bot.handle("/run many")
+        self.assertIn("Cannot use that scope", reply)
 
     def test_run_refuses_while_a_scheduled_pass_is_running(self):
         with patch("wp_hunter.bot.watcher_busy", return_value=True):

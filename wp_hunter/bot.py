@@ -31,6 +31,8 @@ OFFSET_FILE = "bot_offset.json"
 POLL_TIMEOUT_SECONDS = 25
 ERROR_BACKOFF_SECONDS = 10
 MAX_BACKOFF_SECONDS = 120
+WATCH_ALL_PAGES_CAP = 600
+PLUGINS_PER_PAGE = 100
 
 
 class BotError(RuntimeError):
@@ -151,9 +153,6 @@ class TelegramBot:
     def _interval(self) -> int:
         return schedule.resolve_interval(None, None, self._config().get("defaults", {}))
 
-    def _limit(self) -> int:
-        return schedule.read_service_limit() or 5
-
     def handle(self, text: str) -> str:
         command, args = parse_command(text)
         if command in {"start", "help"}:
@@ -163,7 +162,7 @@ class TelegramBot:
         if command == "status":
             return self._cmd_status()
         if command == "run":
-            return self._cmd_run()
+            return self._cmd_run(args)
         if not command:
             return ""
         return tr("bot.unknown")
@@ -200,14 +199,40 @@ class TelegramBot:
             plugins=len(entries),
             last=html.escape(max(checked)[:16].replace("T", " ")) if checked else "-",
             every=schedule.format_duration(self._interval()),
+            pages=self._run_pages([]),
             timer=f"{html.escape(active)} · next {html.escape(next_run)}",
         )
 
-    def _cmd_run(self) -> str:
+    def _run_pages(self, args: list[str]) -> int:
+        """Pages to scan for /run: explicit argument, then config, then the service."""
+        if args:
+            if args[0].lower() in {"all", "semua"}:
+                return WATCH_ALL_PAGES_CAP
+            try:
+                pages = int(args[0])
+            except ValueError as exc:
+                raise ValueError("pages must be a number or 'all'") from exc
+            return max(1, min(WATCH_ALL_PAGES_CAP, pages))
+        configured = self._config().get("defaults", {}).get("watch_pages")
+        if isinstance(configured, int) and not isinstance(configured, bool) and configured > 0:
+            return min(WATCH_ALL_PAGES_CAP, configured)
+        return min(WATCH_ALL_PAGES_CAP, schedule.read_service_limit() or 50)
+
+    def _cmd_run(self, args: list[str] | None = None) -> str:
+        try:
+            pages = self._run_pages(args or [])
+        except ValueError as exc:
+            return tr("bot.run_invalid", error=html.escape(str(exc)))
         if watcher_busy():
             return tr("bot.run_busy")
-        self.send(tr("bot.run_started"))
-        report, _ = self._watch_runner(max_pages=self._limit(), notify=False)
+        self.send(
+            tr(
+                "bot.run_started",
+                pages=pages,
+                approx=f"{pages * PLUGINS_PER_PAGE:,}",
+            )
+        )
+        report, _ = self._watch_runner(max_pages=pages, notify=False)
         if report.has_changes:
             return _headline(report, empty=False)
         return tr("bot.run_none", count=report.checked)
