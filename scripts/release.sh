@@ -81,11 +81,30 @@ git tag -a "$tag" -m "WP Hunter $tag"
 git push origin "$tag"
 
 echo "==> publishing GitHub release"
+wheel="dist/wp_hunter-${version}-py3-none-any.whl"
+sdist="dist/wp_hunter-${version}.tar.gz"
 gh release create "$tag" \
   --title "WP Hunter $tag" \
   --generate-notes \
-  "dist/wp_hunter-${version}-py3-none-any.whl" \
-  "dist/wp_hunter-${version}.tar.gz"
+  "$wheel" \
+  "$sdist"
+
+echo "==> publishing checksums"
+wheel_sha="$(sha256sum "$wheel" | cut -d' ' -f1)"
+sdist_sha="$(sha256sum "$sdist" | cut -d' ' -f1)"
+notes_file="$(mktemp)"
+gh release view "$tag" --json body --jq .body > "$notes_file"
+{
+  echo
+  echo "## Checksums (SHA-256)"
+  echo
+  echo '```'
+  echo "${wheel_sha}  $(basename "$wheel")"
+  echo "${sdist_sha}  $(basename "$sdist")"
+  echo '```'
+} >> "$notes_file"
+gh release edit "$tag" --notes-file "$notes_file"
+rm -f "$notes_file"
 
 echo
 echo "released $tag"

@@ -10,6 +10,7 @@ from . import watch as watch_module
 from .cli_context import AppContext, print_error
 from .i18n import tr
 from .installs import parse_installs_input as parse_installs
+from .lock import StateBusy, state_lock
 
 
 def register(app: typer.Typer) -> None:
@@ -72,13 +73,20 @@ def watch(
         raise typer.Exit(0)
 
     def once() -> bool:
-        report, result = watch_module.run_watch(
-            target_installs=target_installs,
-            max_pages=limit,
-            dry_run=dry_run,
-            notify=not no_notify,
-            check_vulnerabilities=vuln,
-        )
+        try:
+            with state_lock():
+                report, result = watch_module.run_watch(
+                    target_installs=target_installs,
+                    max_pages=limit,
+                    dry_run=dry_run,
+                    notify=not no_notify,
+                    check_vulnerabilities=vuln,
+                )
+        except StateBusy:
+            # A manual /run from Telegram holds the lock; skipping this cycle is
+            # normal and must not fail the timer.
+            context.console.print(f"[dim]{tr('watch.busy')}[/dim]")
+            return True
         if report.has_changes:
             context.console.print(
                 f"[green]{tr('watch.changed', count=len(report.updated))}[/green]"

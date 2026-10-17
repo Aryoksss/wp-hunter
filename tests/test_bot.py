@@ -1,5 +1,6 @@
 import json
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -136,10 +137,11 @@ class CommandTests(BotTestCase):
             watch_runner=lambda **_kwargs: (report, None),
         )
         with patch("wp_hunter.bot.watcher_busy", return_value=False):
-            reply = bot.handle("/run")
+            ack = bot.handle("/run")
+        self.assertIn("Scanning", ack)
+        self.assertTrue(bot.wait_for_run(5))
         self.assertEqual(len(self.notifier.sent), 1)
-        self.assertIn("Scanning", self.notifier.sent[0])
-        self.assertIn("https://wordpress.org/plugins/elementor/", reply)
+        self.assertIn("https://wordpress.org/plugins/elementor/", self.notifier.sent[0])
 
     def test_run_scope_comes_from_the_argument_or_the_config(self):
         report = WatchReport(checked=0)
@@ -160,10 +162,39 @@ class CommandTests(BotTestCase):
         )
         with patch("wp_hunter.bot.watcher_busy", return_value=False):
             bot.handle("/run")
+            self.assertTrue(bot.wait_for_run(5))
             bot.handle("/run 120")
+            self.assertTrue(bot.wait_for_run(5))
             bot.handle("/run all")
+            self.assertTrue(bot.wait_for_run(5))
             bot.handle("/run 5000")
+            self.assertTrue(bot.wait_for_run(5))
         self.assertEqual(seen, [50, 120, 600, 600])
+
+    def test_second_run_is_rejected_while_one_is_active(self):
+        gate = threading.Event()
+
+        def runner(**_kwargs):
+            gate.wait(5)
+            return WatchReport(checked=0), None
+
+        bot = TelegramBot(
+            "token",
+            "42",
+            config_path=self.config_path,
+            state_path=self.state_path,
+            offset_path=self.offset_path,
+            notifier=self.notifier,
+            watch_runner=runner,
+        )
+        with patch("wp_hunter.bot.watcher_busy", return_value=False):
+            first = bot.handle("/run")
+            second = bot.handle("/run")
+        self.assertIn("Scanning", first)
+        self.assertIn("already in progress", second)
+        gate.set()
+        self.assertTrue(bot.wait_for_run(5))
+        self.assertIn("No changes", self.notifier.sent[-1])
 
     def test_run_rejects_a_non_numeric_scope(self):
         with patch("wp_hunter.bot.watcher_busy", return_value=False):

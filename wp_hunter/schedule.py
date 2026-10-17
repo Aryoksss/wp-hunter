@@ -13,6 +13,7 @@ import shutil
 import subprocess
 from pathlib import Path
 
+from .config import config_dir
 from .fsutil import atomic_write_text
 
 MIN_INTERVAL_SECONDS = 60
@@ -35,6 +36,19 @@ _ENV_TEMPLATE = (
     "TELEGRAM_CHAT_ID=\n"
     "# Optional: add WPSCAN_API_TOKEN and --vuln to the service ExecStart.\n"
     "WPSCAN_API_TOKEN=\n"
+)
+
+# Cheap, non-filesystem hardening that cannot break unit management.
+_HARDENING_COMMON = (
+    "NoNewPrivileges=true\n"
+    "PrivateTmp=true\n"
+    "ProtectKernelTunables=true\n"
+    "ProtectKernelModules=true\n"
+    "ProtectControlGroups=true\n"
+    "ProtectClock=true\n"
+    "RestrictSUIDSGID=true\n"
+    "RestrictRealtime=true\n"
+    "LockPersonality=true\n"
 )
 
 
@@ -102,6 +116,7 @@ def render_service(
     env_file: Path = ENV_FILE,
 ) -> str:
     binary = exec_path or shutil.which("wp-hunter") or "wp-hunter"
+    state_dir = config_dir()
     return (
         "[Unit]\n"
         "Description=WP Hunter plugin update watcher (one pass)\n"
@@ -114,6 +129,10 @@ def render_service(
         f"EnvironmentFile={env_file}\n"
         f"ExecStart={binary} watch --limit {max(1, int(limit))}\n"
         "TimeoutStartSec=15min\n"
+        # The watcher only needs its own state directory: lock it down fully.
+        "ProtectSystem=strict\n"
+        "ProtectHome=read-only\n"
+        f"ReadWritePaths=-{state_dir}\n" + _HARDENING_COMMON
     )
 
 
@@ -150,8 +169,9 @@ def render_bot_service(
         f"ExecStart={binary} bot\n"
         "Restart=always\n"
         "RestartSec=10\n"
-        "TimeoutStopSec=45\n"
-        "\n"
+        "TimeoutStopSec=45\n" + _HARDENING_COMMON + "\n"
+        # The bot rewrites /etc/systemd/system on /time, so it keeps write
+        # access there; only the non-filesystem hardening applies.
         "[Install]\n"
         "WantedBy=multi-user.target\n"
     )

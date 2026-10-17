@@ -22,6 +22,7 @@ from typing import Any, Protocol
 from . import httpclient, schedule
 from .config import config_dir, load_config, save_config
 from .i18n import tr
+from .lock import StateBusy, state_lock
 from .notifiers import TelegramNotifier
 from .watch import WatchReport, _headline, run_watch
 from .watch_state import WatchState
@@ -107,6 +108,8 @@ class TelegramBot:
         self._api_get = api_get
         self._sleep = sleep
         self._stop = threading.Event()
+        self._run_thread: threading.Thread | None = None
+        self._lock_dir = state_path.parent if state_path is not None else config_dir()
 
     # -- transport ---------------------------------------------------------
     def api(self, method: str, **params: Any) -> dict:
@@ -223,19 +226,42 @@ class TelegramBot:
             pages = self._run_pages(args or [])
         except ValueError as exc:
             return tr("bot.run_invalid", error=html.escape(str(exc)))
+        if self._run_thread is not None and self._run_thread.is_alive():
+            return tr("bot.run_already")
         if watcher_busy():
             return tr("bot.run_busy")
-        self.send(
-            tr(
-                "bot.run_started",
-                pages=pages,
-                approx=f"{pages * PLUGINS_PER_PAGE:,}",
-            )
+        # Run off the poll loop: a 600-page sweep must not block /status or /time.
+        thread = threading.Thread(
+            target=self._run_job,
+            args=(pages,),
+            name="wp-hunter-run",
+            daemon=True,
         )
-        report, _ = self._watch_runner(max_pages=pages, notify=False)
+        self._run_thread = thread
+        thread.start()
+        return tr("bot.run_started", pages=pages, approx=f"{pages * PLUGINS_PER_PAGE:,}")
+
+    def _run_job(self, pages: int) -> None:
+        try:
+            with state_lock(self._lock_dir):
+                report, _ = self._watch_runner(max_pages=pages, notify=False)
+        except StateBusy:
+            self.send(tr("bot.run_busy"))
+            return
+        except Exception as exc:  # a failed scan must still answer the chat
+            self.send(tr("bot.run_failed", error=html.escape(str(exc))))
+            return
         if report.has_changes:
-            return _headline(report, empty=False)
-        return tr("bot.run_none", count=report.checked)
+            self.send(_headline(report, empty=False))
+        else:
+            self.send(tr("bot.run_none", count=report.checked))
+
+    def wait_for_run(self, timeout: float = 30.0) -> bool:
+        thread = self._run_thread
+        if thread is None:
+            return True
+        thread.join(timeout)
+        return not thread.is_alive()
 
     # -- polling -----------------------------------------------------------
     def _authorized(self, message: dict) -> bool:

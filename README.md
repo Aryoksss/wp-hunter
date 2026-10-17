@@ -161,7 +161,9 @@ sudo wp-hunter watch --install-timer --every 2h --limit 10
 `--install-timer` creates `/etc/wp-hunter/watch.env` at mode `600` when it is
 missing, backs up existing units to `*.bak`, and schedules with
 `OnBootSec` + `OnUnitActiveSec`, so any interval works — not only divisors of an
-hour.
+hour. The generated units are hardened (`NoNewPrivileges`, `PrivateTmp`,
+`ProtectKernel*`); the watcher additionally runs with `ProtectSystem=strict` and
+may only write its own config directory.
 
 ### Change the cadence from Telegram
 
@@ -188,6 +190,11 @@ walks the whole directory (capped at 600 pages). Set the default with
 Only one process may poll a bot token at a time. If a webhook is configured for
 the bot, `getUpdates` fails with a 409 — delete it first with
 `https://api.telegram.org/bot<TOKEN>/deleteWebhook`.
+
+A `/run` continues in the background, so `/status` and `/time` keep answering
+while a 600-page sweep is in flight; the digest arrives when the scan finishes.
+The watcher and the bot share a lock file, so a scheduled pass and a manual run
+never write the watch state at the same time.
 
 ### Vulnerability alerts (optional)
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+import time
 from dataclasses import dataclass, field
 
 from . import httpclient
@@ -11,6 +12,8 @@ TELEGRAM_API_TEMPLATE = "https://api.telegram.org/bot{token}/sendMessage"
 TELEGRAM_TOKEN_ENV = "TELEGRAM_BOT_TOKEN"
 TELEGRAM_CHAT_ID_ENV = "TELEGRAM_CHAT_ID"
 TELEGRAM_MAX_MESSAGE_CHARS = 4096
+TELEGRAM_MAX_RETRIES = 3
+TELEGRAM_MAX_RETRY_AFTER = 30.0
 
 
 def _split_message(text: str, limit: int = TELEGRAM_MAX_MESSAGE_CHARS) -> list[str]:
@@ -80,20 +83,47 @@ class TelegramNotifier:
                 "parse_mode": "HTML",
                 "disable_web_page_preview": True,
             }
-            try:
-                response = httpclient.post(
-                    TELEGRAM_API_TEMPLATE.format(token=self._token),
-                    json=payload,
-                    timeout=self._timeout,
-                )
-            except Exception as exc:  # network errors must not crash the watch loop
-                result.errors.append(str(exc))
+            response = None
+            for attempt in range(1, TELEGRAM_MAX_RETRIES + 1):
+                try:
+                    response = httpclient.post(
+                        TELEGRAM_API_TEMPLATE.format(token=self._token),
+                        json=payload,
+                        timeout=self._timeout,
+                    )
+                except Exception as exc:  # network errors must not crash the watch loop
+                    result.errors.append(str(exc))
+                    response = None
+                    break
+                if response.status_code != 429:
+                    break
+                if attempt == TELEGRAM_MAX_RETRIES:
+                    break
+                # Telegram tells us exactly how long to wait; retrying without it
+                # drops the chunk silently.
+                time.sleep(_retry_after(response))
+            if response is None:
                 continue
             if response.status_code >= 400:
                 result.errors.append(f"HTTP {response.status_code}: {_telegram_error(response)}")
                 continue
             result.delivered += 1
         return result
+
+
+def _retry_after(response: object, default: float = 2.0) -> float:
+    """Read Telegram's retry_after hint, clamped so a run cannot hang forever."""
+    try:
+        body = response.json()  # type: ignore[attr-defined]
+    except (ValueError, json.JSONDecodeError):
+        return default
+    if isinstance(body, dict):
+        parameters = body.get("parameters")
+        if isinstance(parameters, dict):
+            value = parameters.get("retry_after")
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                return max(1.0, min(float(value), TELEGRAM_MAX_RETRY_AFTER))
+    return default
 
 
 def _telegram_error(response: object) -> str:

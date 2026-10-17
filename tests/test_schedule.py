@@ -81,6 +81,20 @@ class RenderTests(unittest.TestCase):
         self.assertIn("EnvironmentFile=/etc/wp-hunter/watch.env", text)
         self.assertIn("ExecStart=/usr/local/bin/wp-hunter watch --limit 25", text)
 
+    def test_watcher_unit_is_hardened(self):
+        text = schedule.render_service(10, exec_path="/usr/bin/wp-hunter")
+        self.assertIn("NoNewPrivileges=true", text)
+        self.assertIn("PrivateTmp=true", text)
+        self.assertIn("ProtectSystem=strict", text)
+        self.assertIn("ProtectHome=read-only", text)
+        self.assertIn("ReadWritePaths=-", text)
+
+    def test_bot_unit_keeps_unit_management_working(self):
+        text = schedule.render_bot_service(exec_path="/usr/bin/wp-hunter")
+        self.assertIn("NoNewPrivileges=true", text)
+        # The bot rewrites /etc/systemd/system on /time, so no ProtectSystem here.
+        self.assertNotIn("ProtectSystem=strict", text)
+
 
 class InstallTimerTests(unittest.TestCase):
     def setUp(self):

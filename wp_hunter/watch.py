@@ -13,6 +13,7 @@ from .vulndb import ScanOutcome, Vulnerability, WpscanClient, warn_unconfigured
 from .watch_state import WatchState
 
 PLUGIN_PAGE_URL = "https://wordpress.org/plugins/{slug}/"
+MAX_CONSECUTIVE_PAGE_FAILURES = 5
 
 
 @dataclass
@@ -57,15 +58,25 @@ class WatchReport:
 
 
 def _collect_popular(target_installs: int, max_pages: int) -> tuple[list[dict], int]:
-    """Return (plugins, failed_pages) from WordPress.org popular listings."""
+    """Return (plugins, failed_pages) from WordPress.org popular listings.
+
+    A failed page no longer aborts the rest of the walk: one 503 in the middle
+    of a 600-page sweep must not hide 40,000 plugins. Five failures in a row
+    still stop the run, so an outage cannot turn into a retry storm.
+    """
     plugins: list[dict] = []
     failed = 0
+    consecutive_failures = 0
     seen_slugs: set[str] = set()
     for page in range(1, max_pages + 1):
         data = http.query_plugins_page(browse="popular", page=page)
         if not data or "plugins" not in data:
             failed += 1
-            break
+            consecutive_failures += 1
+            if consecutive_failures >= MAX_CONSECUTIVE_PAGE_FAILURES:
+                break
+            continue
+        consecutive_failures = 0
         batch = data.get("plugins") or []
         if not batch:
             break

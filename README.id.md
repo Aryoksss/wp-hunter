@@ -162,7 +162,9 @@ sudo wp-hunter watch --install-timer --every 2h --limit 10
 `--install-timer` membuat `/etc/wp-hunter/watch.env` mode `600` bila belum ada,
 membackup unit lama ke `*.bak`, dan menjadwalkan dengan `OnBootSec` +
 `OnUnitActiveSec`, jadi interval apa pun bisa dipakai — bukan hanya pembagi 60
-menit.
+menit. Unit yang dihasilkan sudah di-harden (`NoNewPrivileges`, `PrivateTmp`,
+`ProtectKernel*`); watcher juga berjalan dengan `ProtectSystem=strict` dan hanya
+boleh menulis folder config-nya sendiri.
 
 ### Mengubah jadwal dari Telegram
 
@@ -189,6 +191,11 @@ halaman (~10.000 plugin) dan `/run all` menelusuri seluruh direktori (dibatasi
 Hanya satu proses yang boleh melakukan polling pada satu token bot. Bila webhook
 aktif untuk bot tersebut, `getUpdates` gagal dengan 409 — hapus dulu lewat
 `https://api.telegram.org/bot<TOKEN>/deleteWebhook`.
+
+`/run` berjalan di latar belakang, jadi `/status` dan `/time` tetap menjawab
+saat pemindaian 600 halaman sedang berjalan; digest dikirim setelah scan selesai.
+Watcher dan bot memakai satu lock file, sehingga pass terjadwal dan run manual
+tidak menulis watch state bersamaan.
 
 ### Alert kerentanan (opsional)
 

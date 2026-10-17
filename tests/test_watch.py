@@ -10,6 +10,7 @@ from unittest.mock import patch
 from typer.testing import CliRunner
 
 from wp_hunter.cli import app
+from wp_hunter.lock import StateBusy
 from wp_hunter.notifiers import (
     TELEGRAM_CHAT_ID_ENV,
     TELEGRAM_TOKEN_ENV,
@@ -131,6 +132,46 @@ class TelegramNotifierTests(unittest.TestCase):
         for chunk in chunks:
             self.assertLessEqual(len(chunk), 4096)
 
+    def test_rate_limit_is_retried_with_retry_after(self):
+        notifier = TelegramNotifier(token="t", chat_id="1")
+        limited = type(
+            "R",
+            (),
+            {
+                "status_code": 429,
+                "json": lambda self=None: {"ok": False, "parameters": {"retry_after": 3}},
+            },
+        )()
+        ok = type("R", (), {"status_code": 200, "json": lambda self=None: {"ok": True}})()
+        with (
+            patch("wp_hunter.notifiers.httpclient.post", side_effect=[limited, ok]) as post,
+            patch("wp_hunter.notifiers.time.sleep") as sleep,
+        ):
+            result = notifier.send("digest")
+        self.assertTrue(result.ok)
+        self.assertEqual(result.delivered, 1)
+        self.assertEqual(post.call_count, 2)
+        sleep.assert_called_once_with(3.0)
+
+    def test_rate_limit_gives_up_after_three_attempts(self):
+        notifier = TelegramNotifier(token="t", chat_id="1")
+        limited = type(
+            "R",
+            (),
+            {
+                "status_code": 429,
+                "json": lambda self=None: {"ok": False, "parameters": {"retry_after": 1}},
+            },
+        )()
+        with (
+            patch("wp_hunter.notifiers.httpclient.post", return_value=limited) as post,
+            patch("wp_hunter.notifiers.time.sleep"),
+        ):
+            result = notifier.send("digest")
+        self.assertFalse(result.ok)
+        self.assertEqual(post.call_count, 3)
+        self.assertIn("429", result.errors[0])
+
 
 class WatchRunnerTests(unittest.TestCase):
     def setUp(self):
@@ -212,6 +253,44 @@ class WatchRunnerTests(unittest.TestCase):
         self.assertEqual(report.failed_pages, 1)
         self.assertEqual(report.checked, 0)
         self.assertFalse(report.complete)
+
+    def test_failed_page_does_not_stop_the_remaining_pages(self):
+        pages = {
+            1: {
+                "info": {"pages": 10},
+                "plugins": [
+                    {"slug": "alpha", "name": "Alpha", "version": "1.0", "active_installs": 10}
+                ],
+            },
+            2: None,
+            3: {
+                "info": {"pages": 10},
+                "plugins": [
+                    {"slug": "beta", "name": "Beta", "version": "1.0", "active_installs": 10}
+                ],
+            },
+        }
+
+        def page_or_failure(browse="popular", page=1, **_kwargs):
+            return pages.get(page)
+
+        with patch("wp_hunter.watch.http.query_plugins_page", side_effect=page_or_failure):
+            report, _ = run_watch(state=WatchState(self.path), max_pages=3, notify=False)
+        self.assertEqual(report.failed_pages, 1)
+        self.assertEqual(report.checked, 2)
+        self.assertEqual(WatchState(self.path).get_version("beta"), "1.0")
+
+    def test_five_consecutive_failures_stop_the_walk(self):
+        calls = []
+
+        def always_fail(browse="popular", page=1, **_kwargs):
+            calls.append(page)
+            return None
+
+        with patch("wp_hunter.watch.http.query_plugins_page", side_effect=always_fail):
+            report, _ = run_watch(state=WatchState(self.path), max_pages=50, notify=False)
+        self.assertEqual(calls, [1, 2, 3, 4, 5])
+        self.assertEqual(report.failed_pages, 5)
 
     def test_partial_scan_keeps_recorded_versions(self):
         first_page = {
@@ -480,6 +559,15 @@ class WatchCommandTests(unittest.TestCase):
                 app, ["watch", "--every", "soon"], env={"WP_HUNTER_CONFIG_DIR": tmp}
             )
         self.assertEqual(result.exit_code, 2, result.output)
+
+    def test_busy_lock_skips_the_pass_without_failing(self):
+        with (
+            tempfile.TemporaryDirectory() as tmp,
+            patch("wp_hunter.cli_watch.state_lock", side_effect=StateBusy("busy")),
+        ):
+            result = CliRunner().invoke(app, ["watch"], env={"WP_HUNTER_CONFIG_DIR": tmp})
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertIn("in progress", result.output)
 
 
 class WatchDaemonSignalTests(unittest.TestCase):
