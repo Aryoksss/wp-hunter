@@ -24,7 +24,7 @@ Gunakan Python 3.10 atau lebih baru. `pipx` menjaga instalasi tetap terisolasi.
 Instal wheel dari rilis terbaru:
 
 ```bash
-pipx install https://github.com/Aryoksss/wp-hunter/releases/latest/download/wp_hunter-2.3.3-py3-none-any.whl
+pipx install https://github.com/Aryoksss/wp-hunter/releases/latest/download/wp_hunter-2.3.4-py3-none-any.whl
 wp-hunter --version
 wp-hunter doctor
 ```
