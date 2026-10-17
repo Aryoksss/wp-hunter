@@ -201,7 +201,9 @@ def download_plugin(
         )
         version_ok = not update_check or not remote_is_newer
         if valid and version_ok:
-            sha256 = _sha256_of_file(cached_path)
+            # is_downloaded() already matched the stored SHA-256, so reuse that
+            # digest instead of hashing the same archive a third time.
+            sha256 = manifest.get_sha256(slug) or _sha256_of_file(cached_path)
             try:
                 _persist_download_state(
                     plugin_dir, plugin, cached_filename, cached_path, sha256, manifest

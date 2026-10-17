@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import typer
-from rich.panel import Panel
 from rich.table import Table
 
 from . import core
@@ -49,6 +48,6 @@ def status_command(
 
 
 def doctor(ctx: typer.Context, semgrep: str | None = None, rules: str | None = None) -> None:
-    context = state(ctx)
-    context.console.print(Panel(tr("doctor.title")))
+    state(ctx)
+    # cmd_check prints its own localized header; a second panel here duplicated it.
     core.cmd_check(semgrep, rules, language=get_language())

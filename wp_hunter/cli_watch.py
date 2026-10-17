@@ -60,6 +60,10 @@ def watch(
             context.console.print(
                 f"[bold red]{tr('watch.vulnerable', count=len(report.vulnerable))}[/bold red]"
             )
+        if not report.complete:
+            context.console.print(
+                f"[yellow]{tr('watch.partial', failed=report.failed_pages, checked=report.checked)}[/yellow]"
+            )
         if result is not None:
             if result.skipped_reason:
                 context.console.print(f"[yellow]{result.skipped_reason}[/yellow]")
@@ -71,7 +75,9 @@ def watch(
                 )
             if not result.ok:
                 return False
-        return True
+        # A partial listing is not a successful run: exit non-zero so cron and
+        # systemd surface it instead of logging a green pass.
+        return report.complete
 
     if not daemon:
         raise typer.Exit(0 if once() else 2)

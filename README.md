@@ -121,6 +121,10 @@ plugin's current version against the last one it recorded, and reports the ones
 that changed. State lives in `watch_state.json` under the WP Hunter config
 directory, so repeated runs only report real changes.
 
+If a listing page fails, `watch` reports a partial scan, keeps every version it
+had already recorded (nothing is pruned for plugins it never saw), and exits
+non-zero so cron and systemd surface the failure instead of logging a green run.
+
 ```bash
 # One pass over the top ~500 popular plugins, Telegram on changes
 wp-hunter watch --limit 5
@@ -128,8 +132,8 @@ wp-hunter watch --limit 5
 # Only plugins with at least 100K installs
 wp-hunter watch --installs 100K --limit 5
 
-# See what changed without recording state or notifying
-wp-hunter watch --dry-run --no-notify
+# See what changed without recording state or notifying (dry runs never notify)
+wp-hunter watch --dry-run
 
 # Also alert on known vulnerabilities (needs a free WPScan token)
 wp-hunter watch --vuln

@@ -47,6 +47,11 @@ class WatchReport:
     def has_changes(self) -> bool:
         return bool(self.updated or self.vulnerable)
 
+    @property
+    def complete(self) -> bool:
+        """False when a listing page failed, so the run only saw part of the list."""
+        return self.failed_pages == 0
+
 
 def _collect_popular(target_installs: int, max_pages: int) -> tuple[list[dict], int]:
     """Return (plugins, failed_pages) from WordPress.org popular listings."""
@@ -211,14 +216,19 @@ def run_watch(
             warn_unconfigured()
 
     if not dry_run:
-        store.remove_missing(seen)
+        # A failed page means the rest of the listing was never seen. Pruning
+        # then would drop live slugs and report them as "new" on the next run.
+        if report.complete:
+            store.remove_missing(seen)
         store.save()
 
     if not report.has_changes:
         return report, None
 
     message = _headline(report, empty=False)
-    if not notify:
+    if dry_run or not notify:
+        # --dry-run promises "without recording state or notifying", so it must
+        # never send an external message either.
         print(message, file=sys.stderr)
         return report, None
     sender = notifier if notifier is not None else TelegramNotifier()

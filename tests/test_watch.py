@@ -7,6 +7,9 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from typer.testing import CliRunner
+
+from wp_hunter.cli import app
 from wp_hunter.notifiers import (
     TELEGRAM_CHAT_ID_ENV,
     TELEGRAM_TOKEN_ENV,
@@ -14,7 +17,7 @@ from wp_hunter.notifiers import (
     _split_message,
 )
 from wp_hunter.vulndb import ScanOutcome, Vulnerability, WpscanClient
-from wp_hunter.watch import run_watch
+from wp_hunter.watch import WatchReport, run_watch
 from wp_hunter.watch_state import WatchState
 
 
@@ -208,6 +211,70 @@ class WatchRunnerTests(unittest.TestCase):
             report, _ = run_watch(state=WatchState(self.path), max_pages=1, notify=False)
         self.assertEqual(report.failed_pages, 1)
         self.assertEqual(report.checked, 0)
+        self.assertFalse(report.complete)
+
+    def test_partial_scan_keeps_recorded_versions(self):
+        first_page = {
+            "info": {"pages": 2, "results": 1},
+            "plugins": [
+                {
+                    "slug": "elementor",
+                    "name": "Elementor",
+                    "version": "4.3.4",
+                    "active_installs": 10_000_000,
+                }
+            ],
+        }
+
+        def page_or_failure(browse="popular", page=1, **_kwargs):
+            return first_page if page == 1 else None
+
+        state = WatchState(self.path)
+        state.record("elementor", "4.3.4")
+        state.record("unseen-plugin", "2.0.0")
+        state.save()
+        with (
+            patch("wp_hunter.watch.http.query_plugins_page", side_effect=page_or_failure),
+            contextlib.redirect_stderr(io.StringIO()),
+        ):
+            report, _ = run_watch(state=WatchState(self.path), max_pages=2, notify=False)
+        self.assertFalse(report.complete)
+        self.assertEqual(report.failed_pages, 1)
+        # The second page was never seen, so its recorded version must survive.
+        self.assertEqual(WatchState(self.path).get_version("unseen-plugin"), "2.0.0")
+
+    def test_complete_scan_still_prunes_vanished_plugins(self):
+        state = WatchState(self.path)
+        state.record("elementor", "4.3.4")
+        state.record("gone-plugin", "1.0.0")
+        state.save()
+        report, _ = self._run(max_pages=1)
+        self.assertTrue(report.complete)
+        self.assertIsNone(WatchState(self.path).get_version("gone-plugin"))
+
+    def test_dry_run_never_notifies(self):
+        state = WatchState(self.path)
+        state.record("elementor", "1.0.0")
+        state.save()
+        notifier = TelegramNotifier(token="t", chat_id="1")
+        sent: list[str] = []
+        notifier.send = lambda text: sent.append(text)  # type: ignore[method-assign]
+        errors = io.StringIO()
+        with (
+            patch("wp_hunter.watch.http.query_plugins_page", return_value=self.page),
+            contextlib.redirect_stderr(errors),
+        ):
+            report, result = run_watch(
+                state=WatchState(self.path),
+                max_pages=1,
+                dry_run=True,
+                notify=True,
+                notifier=notifier,
+            )
+        self.assertEqual(len(report.updated), 1)
+        self.assertEqual(sent, [])
+        self.assertIsNone(result)
+        self.assertIn("Elementor", errors.getvalue())
 
     def test_html_entities_are_not_double_escaped(self):
         self.page["plugins"][0]["name"] = "Elementor &#8211; builder"
@@ -311,6 +378,24 @@ class WatchVulnerabilityTests(unittest.TestCase):
                 vuln_client=client,
             )
         self.assertIn("WPSCAN_API_TOKEN", stderr.getvalue())
+
+
+class WatchCommandTests(unittest.TestCase):
+    def _invoke(self, report: WatchReport):
+        with (
+            tempfile.TemporaryDirectory() as tmp,
+            patch("wp_hunter.cli_watch.watch_module.run_watch", return_value=(report, None)),
+        ):
+            return CliRunner().invoke(app, ["watch"], env={"WP_HUNTER_CONFIG_DIR": tmp})
+
+    def test_partial_scan_warns_and_exits_nonzero(self):
+        result = self._invoke(WatchReport(checked=3, failed_pages=1))
+        self.assertEqual(result.exit_code, 2, result.output)
+        self.assertIn("Partial scan", result.output)
+
+    def test_complete_scan_exits_zero(self):
+        result = self._invoke(WatchReport(checked=3))
+        self.assertEqual(result.exit_code, 0, result.output)
 
 
 class WatchDaemonSignalTests(unittest.TestCase):

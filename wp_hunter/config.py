@@ -8,11 +8,22 @@ from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
+from .dates import parse_date_input
 from .fsutil import atomic_text_file
 from .models import PRESET_KEYS
+from .validation import BROWSE_MODES
 
 CONFIG_SCHEMA_VERSION = 1
 PRESET_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
+_PRESET_NUMERIC_MINIMUMS: dict[str, int] = {
+    "max_age_years": 0,
+    "min_boost": 0,
+    "pages": 1,
+    "limit": 1,
+    "workers": 1,
+    "api_workers": 1,
+    "max_download_mb": 1,
+}
 BUILTIN_PRESETS: dict[str, dict[str, Any]] = {
     "wporg-10k": {
         "source": "wporg",
@@ -115,6 +126,31 @@ def save_config(data: dict[str, Any], path: Path | None = None) -> Path:
     return target
 
 
+def _validate_preset_value(name: str, key: str, value: object) -> None:
+    """Reject preset values the downloader would otherwise silently reinterpret."""
+    if value is None:
+        return
+    if key == "since":
+        if parse_date_input(value) is None:
+            raise ValueError(
+                f"Preset {name!r} has an invalid since value; use YYYY, YYYY-MM, or YYYY-MM-DD"
+            )
+        return
+    minimum = _PRESET_NUMERIC_MINIMUMS.get(key)
+    if minimum is not None:
+        if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
+            raise ValueError(f"Preset {name!r} needs an integer >= {minimum} for {key}")
+        return
+    if key == "installs_mode" and value not in {"exact", "minimum"}:
+        raise ValueError(f"Preset {name!r} installs_mode must be 'exact' or 'minimum'")
+    if key == "browse" and value not in BROWSE_MODES:
+        raise ValueError(f"Preset {name!r} browse must be one of {', '.join(BROWSE_MODES)}")
+    if key == "include_themes" and not isinstance(value, bool):
+        raise ValueError(f"Preset {name!r} include_themes must be true or false")
+    if key == "installs" and not isinstance(value, str):
+        raise ValueError(f"Preset {name!r} installs must be a string such as '10K'")
+
+
 def validate_preset(name: object, values: object) -> dict[str, Any]:
     if not isinstance(name, str) or not PRESET_NAME_RE.fullmatch(name):
         raise ValueError("Preset name must use lowercase letters, numbers, '.', '_' or '-'")
@@ -127,6 +163,8 @@ def validate_preset(name: object, values: object) -> dict[str, Any]:
         )
     if values.get("source") not in {"wporg", "patchstack"}:
         raise ValueError("Preset source must be 'wporg' or 'patchstack'")
+    for key, value in values.items():
+        _validate_preset_value(name, key, value)
     return dict(values)
 
 

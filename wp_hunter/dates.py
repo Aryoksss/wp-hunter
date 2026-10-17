@@ -4,13 +4,23 @@ import sys
 from datetime import datetime, timedelta
 
 
+def parse_date_input(value: object) -> datetime | None:
+    """Parse YYYY, YYYY-MM, or YYYY-MM-DD; return None for anything else."""
+    if not isinstance(value, str):
+        return None
+    for date_format in ("%Y-%m-%d", "%Y-%m", "%Y"):
+        try:
+            return datetime.strptime(value, date_format)
+        except ValueError:
+            continue
+    return None
+
+
 def resolve_cutoff_date(min_updated_years: int = 0, since: str | None = None) -> datetime | None:
     if since:
-        for date_format in ("%Y-%m-%d", "%Y-%m", "%Y"):
-            try:
-                return datetime.strptime(since, date_format)
-            except ValueError:
-                continue
+        parsed = parse_date_input(since)
+        if parsed is not None:
+            return parsed
         print(
             f"  [WARN] Could not parse --since {since!r} (use YYYY-MM-DD); ignoring filter.",
             file=sys.stderr,

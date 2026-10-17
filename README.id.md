@@ -120,6 +120,11 @@ versi tiap plugin dengan versi terakhir yang dicatat, lalu melaporkan yang
 berubah. State disimpan di `watch_state.json` di folder config WP Hunter,
 sehingga run berikutnya hanya melaporkan perubahan nyata.
 
+Bila satu halaman daftar gagal, `watch` melaporkan pemindaian tidak lengkap,
+mempertahankan semua versi yang sudah tercatat (tidak ada yang dipangkas untuk
+plugin yang tidak terlihat), dan keluar dengan kode non-nol agar cron dan
+systemd menandainya, bukan mencatat run hijau.
+
 ```bash
 # Sekali jalan untuk ~500 plugin populer teratas, kirim ke Telegram bila berubah
 wp-hunter watch --limit 5
@@ -127,8 +132,8 @@ wp-hunter watch --limit 5
 # Hanya plugin dengan minimal 100K instalasi
 wp-hunter watch --installs 100K --limit 5
 
-# Lihat perubahan tanpa mencatat state dan tanpa notifikasi
-wp-hunter watch --dry-run --no-notify
+# Lihat perubahan tanpa mencatat state dan tanpa notifikasi (dry-run tidak pernah mengirim notifikasi)
+wp-hunter watch --dry-run
 
 # Sekaligus beri alert kerentanan yang diketahui (butuh token WPScan gratis)
 wp-hunter watch --vuln

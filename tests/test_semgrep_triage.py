@@ -267,7 +267,10 @@ class SemgrepAdapterTests(unittest.TestCase):
         self.assertEqual(results[0]["extra"]["context"]["access"], "unknown")
 
     def test_find_semgrep_does_not_install(self):
-        with patch.object(semgrep_locate.shutil, "which", return_value=None):
+        with (
+            patch.object(semgrep_locate.shutil, "which", return_value=None),
+            patch.object(semgrep_locate, "_interpreter_bin_dir", return_value=None),
+        ):
             self.assertIsNone(hunter._find_semgrep(None))
 
 
@@ -796,6 +799,42 @@ class RootSafetyTests(unittest.TestCase):
                 save_preset(config, "unsafe", {"source": "wporg", "force": True})
             save_config(config, Path(temp_name) / "config.json")
 
+    def test_presets_reject_values_the_downloader_would_reinterpret(self):
+        config = default_config()
+        invalid = [
+            {"source": "wporg", "since": "2026-13-40"},
+            {"source": "wporg", "since": "last-year"},
+            {"source": "wporg", "pages": 0},
+            {"source": "wporg", "max_age_years": -1},
+            {"source": "wporg", "installs_mode": "sometimes"},
+            {"source": "wporg", "browse": "trending"},
+        ]
+        for values in invalid:
+            with self.subTest(values=values), self.assertRaises(ValueError):
+                save_preset(config, "broken", dict(values))
+        self.assertNotIn("broken", config["presets"])
+
+    def test_presets_accept_valid_since_and_numbers(self):
+        config = default_config()
+        save_preset(
+            config,
+            "dated",
+            {"source": "wporg", "since": "2026-01", "pages": 10, "limit": 5},
+        )
+        values, builtin = get_preset(config, "dated")
+        self.assertFalse(builtin)
+        self.assertEqual(values["since"], "2026-01")
+        self.assertEqual(values["pages"], 10)
+
+    def test_config_load_rejects_a_preset_with_an_invalid_since(self):
+        with tempfile.TemporaryDirectory() as temp_name:
+            path = Path(temp_name) / "config.json"
+            config = default_config()
+            config["presets"]["bad"] = {"source": "wporg", "since": "nope"}
+            path.write_text(json.dumps(config), encoding="utf-8")
+            with self.assertRaises(ValueError):
+                load_config(path)
+
     def test_built_in_presets_are_immutable(self):
         with tempfile.TemporaryDirectory() as temp_name:
             config = default_config()
@@ -1065,6 +1104,27 @@ class DownloadAndExportTests(unittest.TestCase):
             self.assertTrue(ok, message)
             self.assertEqual(archive.read_bytes(), new_payload)
             self.assertFalse(list(plugin_dir.glob("*.part")))
+
+    def test_cached_download_reuses_the_verified_sha256(self):
+        payload = zip_payload()
+        url = "https://downloads.wordpress.org/plugin/fixture-plugin.zip"
+        plugin = self.plugin(url, payload)
+        sha = hashlib.sha256(payload).hexdigest()
+        with tempfile.TemporaryDirectory() as temp_name:
+            root = hunter._ensure_hunter_root(temp_name)
+            plugin_dir = root / plugin["slug"]
+            plugin_dir.mkdir()
+            archive = plugin_dir / "fixture-plugin.zip"
+            archive.write_bytes(payload)
+            manifest = DownloadManifest(root)
+            manifest.mark_downloaded(plugin["slug"], archive.name, 1, "1.0", sha)
+            with patch.object(downloader, "_sha256_of_file") as rehash:
+                ok, _slug, message = downloader.download_plugin(
+                    plugin, str(root), manifest=manifest
+                )
+        self.assertTrue(ok, message)
+        # is_downloaded() already verified the digest; do not hash it again.
+        rehash.assert_not_called()
 
     def test_redirect_to_untrusted_host_is_never_requested(self):
         payload = zip_payload()

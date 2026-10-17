@@ -9,6 +9,27 @@ from .constants import SEMGREP_RULES_DEFAULT
 from .semgrep_adapter import validate_semgrep_config as _validate_semgrep_config
 
 
+def _interpreter_bin_dir() -> Path | None:
+    """Directory holding the running interpreter's console scripts (venv/pipx)."""
+    executable = Path(sys.executable)
+    if executable.parent.name in {"bin", "Scripts"}:
+        return executable.parent
+    return None
+
+
+def _semgrep_in(directory: Path | None) -> str | None:
+    if directory is None:
+        return None
+    for name in ("semgrep", "semgrep.exe"):
+        candidate = directory / name
+        try:
+            if candidate.is_file() and not candidate.is_symlink() and os.access(candidate, os.X_OK):
+                return str(candidate)
+        except OSError:
+            continue
+    return None
+
+
 def find_semgrep(explicit: str | None) -> str | None:
     if explicit:
         if (
@@ -19,7 +40,13 @@ def find_semgrep(explicit: str | None) -> str | None:
             return explicit
         print(f"  [ERROR] Semgrep not found at: {explicit}", file=sys.stderr)
         return None
-    return shutil.which("semgrep") or shutil.which("semgrep.exe")
+    # A semgrep installed next to wp-hunter (pipx inject, venv) is not on PATH,
+    # so fall back to the interpreter's own bin directory.
+    return (
+        shutil.which("semgrep")
+        or shutil.which("semgrep.exe")
+        or _semgrep_in(_interpreter_bin_dir())
+    )
 
 
 def semgrep_install_hint() -> str:

@@ -43,8 +43,22 @@ class FindSemgrepTests(unittest.TestCase):
             self.assertEqual(semgrep_locate.find_semgrep(None), "/usr/bin/semgrep")
 
     def test_returns_none_when_not_on_path(self):
-        with patch.object(semgrep_locate.shutil, "which", return_value=None):
+        with (
+            patch.object(semgrep_locate.shutil, "which", return_value=None),
+            patch.object(semgrep_locate, "_interpreter_bin_dir", return_value=None),
+        ):
             self.assertIsNone(semgrep_locate.find_semgrep(None))
+
+    def test_falls_back_to_the_interpreter_bin_directory(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            exe = Path(tmp) / "semgrep"
+            exe.write_text("#!/bin/sh\n")
+            exe.chmod(0o755)
+            with (
+                patch.object(semgrep_locate.shutil, "which", return_value=None),
+                patch.object(semgrep_locate, "_interpreter_bin_dir", return_value=Path(tmp)),
+            ):
+                self.assertEqual(semgrep_locate.find_semgrep(None), str(exe))
 
 
 class TextHelperTests(unittest.TestCase):

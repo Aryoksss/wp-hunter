@@ -113,6 +113,11 @@ class DownloadManifest:
             entry = self._data.get(slug, {})
             return str(entry.get("version", "") or "") if isinstance(entry, dict) else ""
 
+    def get_sha256(self, slug: str) -> str:
+        with self._lock:
+            entry = self._data.get(slug, {})
+            return str(entry.get("sha256", "") or "") if isinstance(entry, dict) else ""
+
     def get_filename(self, slug: str) -> str:
         with self._lock:
             entry = self._data.get(slug, {})
