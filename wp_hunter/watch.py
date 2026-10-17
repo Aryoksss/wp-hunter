@@ -70,16 +70,28 @@ def _collect_popular(target_installs: int, max_pages: int) -> tuple[list[dict], 
     seen_slugs: set[str] = set()
     for page in range(1, max_pages + 1):
         data = http.query_plugins_page(browse="popular", page=page)
+        info = data.get("info") if isinstance(data, dict) else None
+        total_pages = _as_int(info.get("pages")) if isinstance(info, dict) else 0
         if not data or "plugins" not in data:
             failed += 1
             consecutive_failures += 1
             if consecutive_failures >= MAX_CONSECUTIVE_PAGE_FAILURES:
                 break
             continue
-        consecutive_failures = 0
         batch = data.get("plugins") or []
         if not batch:
+            # An empty page before the last one is an upstream hiccup, not the
+            # end of the listing. Counting it as a failure keeps the run
+            # "partial", so recorded versions are never pruned from a truncated
+            # view.
+            if total_pages and page < total_pages:
+                failed += 1
+                consecutive_failures += 1
+                if consecutive_failures >= MAX_CONSECUTIVE_PAGE_FAILURES:
+                    break
+                continue
             break
+        consecutive_failures = 0
         for raw in batch:
             slug = str(raw.get("slug") or "")
             if not slug or slug in seen_slugs:
@@ -89,8 +101,6 @@ def _collect_popular(target_installs: int, max_pages: int) -> tuple[list[dict], 
                 return plugins, failed
             seen_slugs.add(slug)
             plugins.append(raw)
-        info = data.get("info", {})
-        total_pages = _as_int(info.get("pages")) if isinstance(info, dict) else 0
         if total_pages and page >= total_pages:
             break
     return plugins, failed
@@ -239,6 +249,25 @@ def _collect_vulnerabilities(
     return vulnerable, errors
 
 
+def _safe_to_prune(seen: set[str], store: WatchState) -> bool:
+    """Refuse to prune when this run saw far fewer plugins than were recorded.
+
+    Upstream can truncate a listing without reporting an error; keeping stale
+    entries is harmless, while pruning them re-reports every plugin as new.
+    """
+    recorded = store.count()
+    if recorded == 0:
+        return True
+    if len(seen) * 2 >= recorded:
+        return True
+    print(
+        f"  [WARN] Saw {len(seen)} plugins but {recorded} are recorded; "
+        "keeping the recorded versions instead of pruning.",
+        file=sys.stderr,
+    )
+    return False
+
+
 def run_watch(
     target_installs: int = 0,
     max_pages: int = 5,
@@ -291,8 +320,13 @@ def run_watch(
     if not dry_run:
         # A failed page means the rest of the listing was never seen. Pruning
         # then would drop live slugs and report them as "new" on the next run.
-        if report.complete:
+        if report.complete and _safe_to_prune(seen, store):
             store.remove_missing(seen)
+        elif not report.complete:
+            print(
+                "  [WARN] Partial listing: recorded versions were kept.",
+                file=sys.stderr,
+            )
         store.save()
 
     if not report.has_changes:

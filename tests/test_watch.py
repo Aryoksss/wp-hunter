@@ -274,7 +274,10 @@ class WatchRunnerTests(unittest.TestCase):
         def page_or_failure(browse="popular", page=1, **_kwargs):
             return pages.get(page)
 
-        with patch("wp_hunter.watch.http.query_plugins_page", side_effect=page_or_failure):
+        with (
+            patch("wp_hunter.watch.http.query_plugins_page", side_effect=page_or_failure),
+            contextlib.redirect_stderr(io.StringIO()),
+        ):
             report, _ = run_watch(state=WatchState(self.path), max_pages=3, notify=False)
         self.assertEqual(report.failed_pages, 1)
         self.assertEqual(report.checked, 2)
@@ -291,6 +294,54 @@ class WatchRunnerTests(unittest.TestCase):
             report, _ = run_watch(state=WatchState(self.path), max_pages=50, notify=False)
         self.assertEqual(calls, [1, 2, 3, 4, 5])
         self.assertEqual(report.failed_pages, 5)
+
+    def test_empty_page_before_the_last_is_a_failure_not_the_end(self):
+        pages = {
+            1: {
+                "info": {"pages": 3},
+                "plugins": [
+                    {"slug": "alpha", "name": "Alpha", "version": "1.0", "active_installs": 5}
+                ],
+            },
+            2: {"info": {"pages": 3}, "plugins": []},
+            3: {
+                "info": {"pages": 3},
+                "plugins": [
+                    {"slug": "beta", "name": "Beta", "version": "1.0", "active_installs": 5}
+                ],
+            },
+        }
+
+        def page_or_empty(browse="popular", page=1, **_kwargs):
+            return pages.get(page)
+
+        with (
+            patch("wp_hunter.watch.http.query_plugins_page", side_effect=page_or_empty),
+            contextlib.redirect_stderr(io.StringIO()),
+        ):
+            report, _ = run_watch(state=WatchState(self.path), max_pages=3, notify=False)
+        self.assertEqual(report.failed_pages, 1)
+        self.assertEqual(report.checked, 2)
+        self.assertFalse(report.complete)
+
+    def test_truncated_listing_never_prunes_recorded_versions(self):
+        state = WatchState(self.path)
+        for index in range(100):
+            state.record(f"slug-{index}", "1.0")
+        state.save()
+        page = {
+            "info": {"pages": 1},
+            "plugins": [{"slug": "alpha", "name": "Alpha", "version": "1.0", "active_installs": 5}],
+        }
+        with (
+            patch("wp_hunter.watch.http.query_plugins_page", return_value=page),
+            contextlib.redirect_stderr(io.StringIO()),
+        ):
+            report, _ = run_watch(state=WatchState(self.path), max_pages=1, notify=False)
+        self.assertTrue(report.complete)
+        reloaded = WatchState(self.path)
+        self.assertEqual(reloaded.get_version("slug-0"), "1.0")
+        self.assertEqual(reloaded.count(), 101)
 
     def test_partial_scan_keeps_recorded_versions(self):
         first_page = {
