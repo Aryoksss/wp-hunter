@@ -17,7 +17,7 @@ from wp_hunter.notifiers import (
     _split_message,
 )
 from wp_hunter.vulndb import ScanOutcome, Vulnerability, WpscanClient
-from wp_hunter.watch import WatchReport, run_watch
+from wp_hunter.watch import PluginUpdate, WatchReport, _headline, run_watch
 from wp_hunter.watch_state import WatchState
 
 
@@ -276,6 +276,23 @@ class WatchRunnerTests(unittest.TestCase):
         self.assertIsNone(result)
         self.assertIn("Elementor", errors.getvalue())
 
+    def test_message_links_each_plugin_to_wordpress_org(self):
+        state = WatchState(self.path)
+        state.record("elementor", "1.0.0")
+        state.save()
+        notifier = TelegramNotifier(token="t", chat_id="1")
+        with (
+            patch("wp_hunter.watch.http.query_plugins_page", return_value=self.page),
+            patch("wp_hunter.notifiers.httpclient.post") as post,
+        ):
+            post.return_value.status_code = 200
+            with contextlib.redirect_stderr(io.StringIO()):
+                run_watch(state=WatchState(self.path), max_pages=1, notifier=notifier)
+        text = post.call_args.kwargs["json"]["text"]
+        self.assertIn('<a href="https://wordpress.org/plugins/elementor/">Elementor</a>', text)
+        self.assertIn("<code>elementor</code>", text)
+        self.assertIn("WP Hunter — 1 update", text)
+
     def test_html_entities_are_not_double_escaped(self):
         self.page["plugins"][0]["name"] = "Elementor &#8211; builder"
         state = WatchState(self.path)
@@ -380,6 +397,49 @@ class WatchVulnerabilityTests(unittest.TestCase):
         self.assertIn("WPSCAN_API_TOKEN", stderr.getvalue())
 
 
+class HeadlineTests(unittest.TestCase):
+    def test_unsafe_slug_is_never_linked(self):
+        report = WatchReport(
+            checked=1,
+            updated=[
+                PluginUpdate(
+                    slug="bad slug",
+                    name="Evil <b>",
+                    old_version="1.0",
+                    new_version="2.0",
+                    last_updated="",
+                    active_installs=10,
+                )
+            ],
+        )
+        text = _headline(report, empty=False)
+        self.assertNotIn("<a href", text)
+        self.assertIn("Evil &lt;b&gt;", text)
+
+    def test_partial_scan_is_flagged_in_the_message(self):
+        report = WatchReport(
+            checked=5,
+            failed_pages=1,
+            updated=[
+                PluginUpdate(
+                    slug="elementor",
+                    name="Elementor",
+                    old_version="1.0",
+                    new_version="2.0",
+                    last_updated="2026-10-04 12:50pm GMT",
+                    active_installs=1000,
+                )
+            ],
+        )
+        text = _headline(report, empty=False)
+        self.assertIn("Partial scan: 1 listing page failed", text)
+        self.assertIn("updated 2026-10-04", text)
+        self.assertIn('<a href="https://wordpress.org/plugins/elementor/">', text)
+
+    def test_empty_report_renders_nothing(self):
+        self.assertEqual(_headline(WatchReport(), empty=True), "")
+
+
 class WatchCommandTests(unittest.TestCase):
     def _invoke(self, report: WatchReport):
         with (
@@ -396,6 +456,29 @@ class WatchCommandTests(unittest.TestCase):
     def test_complete_scan_exits_zero(self):
         result = self._invoke(WatchReport(checked=3))
         self.assertEqual(result.exit_code, 0, result.output)
+
+    def test_install_timer_uses_the_requested_interval(self):
+        with (
+            tempfile.TemporaryDirectory() as tmp,
+            patch(
+                "wp_hunter.cli_watch.schedule.install_timer", return_value=["wrote unit"]
+            ) as install,
+        ):
+            result = CliRunner().invoke(
+                app,
+                ["watch", "--every", "2h", "--install-timer", "--limit", "15"],
+                env={"WP_HUNTER_CONFIG_DIR": tmp},
+            )
+        self.assertEqual(result.exit_code, 0, result.output)
+        install.assert_called_once_with(7200, limit=15)
+        self.assertIn("every 2h", result.output)
+
+    def test_invalid_every_exits_two(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            result = CliRunner().invoke(
+                app, ["watch", "--every", "soon"], env={"WP_HUNTER_CONFIG_DIR": tmp}
+            )
+        self.assertEqual(result.exit_code, 2, result.output)
 
 
 class WatchDaemonSignalTests(unittest.TestCase):

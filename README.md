@@ -139,6 +139,29 @@ wp-hunter watch --dry-run
 wp-hunter watch --vuln
 ```
 
+### Change how often it checks
+
+`--every` takes minutes or hours (`30m`, `2h`, `1h30m`); a bare number means
+minutes. It drives both the resident `--daemon` loop and the systemd timer.
+`--interval` still takes seconds for compatibility, and `--every` wins over it.
+
+```bash
+# Resident daemon, re-check every 2 hours
+wp-hunter watch --daemon --every 2h --limit 10
+
+# Persist the default, so a plain `wp-hunter watch` uses it
+wp-hunter config set watch_every 45m
+
+# Write /etc/systemd/system/wp-hunter-watch.{service,timer} for this interval,
+# then daemon-reload + enable + restart (needs root)
+sudo wp-hunter watch --install-timer --every 2h --limit 10
+```
+
+`--install-timer` creates `/etc/wp-hunter/watch.env` at mode `600` when it is
+missing, backs up existing units to `*.bak`, and schedules with
+`OnBootSec` + `OnUnitActiveSec`, so any interval works — not only divisors of an
+hour.
+
 ### Vulnerability alerts (optional)
 
 With `--vuln`, `watch` also queries the [WPScan](https://wpscan.com/) database
@@ -216,7 +239,9 @@ run in a foreground terminal. Add `--vuln` and `WPSCAN_API_TOKEN` to a service
 or cron line if you also want vulnerability alerts.
 
 **Option 3 — systemd timer.** For a single scheduled pass (no resident
-process), pair a oneshot service with a timer.
+process), pair a oneshot service with a timer. Shortcut: `sudo wp-hunter watch
+--install-timer --every 30m` writes both files, reloads systemd, and arms the
+timer for you.
 
 `/etc/systemd/system/wp-hunter-watch.service`:
 

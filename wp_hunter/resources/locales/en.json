@@ -24,6 +24,8 @@
   "watch.notified": "Sent {count} Telegram message(s).",
   "watch.vulnerable": "{count} plugin(s) have known vulnerabilities.",
   "watch.partial": "Partial scan: {failed} listing page(s) failed, so {checked} plugin(s) were checked and no recorded version was pruned.",
+  "watch.interval": "Checking every {every}.",
+  "watch.timer_installed": "systemd timer installed and armed (every {every}).",
   "status.no_roots": "No recent WP Hunter output folders are configured.",
   "status.title": "WP Hunter Status",
   "status.columns": "Root|Downloaded|Present|Removed|Reviewed|Candidates|Errors|Last scan",

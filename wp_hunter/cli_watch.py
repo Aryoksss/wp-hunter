@@ -5,6 +5,7 @@ import threading
 
 import typer
 
+from . import schedule
 from . import watch as watch_module
 from .cli_context import AppContext, print_error
 from .i18n import tr
@@ -23,8 +24,15 @@ def watch(
         None, help="Minimum installs, e.g. 100K or 1M. Default: no minimum."
     ),
     limit: int = typer.Option(5, min=1, help="API pages to scan (~100 plugins each)."),
-    interval: int = typer.Option(3600, min=60, help="Seconds between checks in --daemon mode."),
-    daemon: bool = typer.Option(False, help="Keep running and re-check every --interval seconds."),
+    every: str | None = typer.Option(
+        None,
+        "--every",
+        help="Check interval: 30m, 2h, 1h30m. A bare number means minutes.",
+    ),
+    interval: int | None = typer.Option(
+        None, min=60, help="Legacy: seconds between checks in --daemon mode."
+    ),
+    daemon: bool = typer.Option(False, help="Keep running and re-check every interval."),
     vuln: bool = typer.Option(
         False, help="Also check WPScan for known vulnerabilities (needs WPSCAN_API_TOKEN)."
     ),
@@ -34,13 +42,34 @@ def watch(
     no_notify: bool = typer.Option(
         False, "--no-notify", help="Print to stderr instead of Telegram."
     ),
+    install_timer: bool = typer.Option(
+        False,
+        "--install-timer",
+        help="Write and arm the systemd timer for this interval (needs root).",
+    ),
 ) -> None:
     context: AppContext = ctx.find_root().obj
     try:
         target_installs = parse_installs(installs) if installs else 0
+        interval_seconds = schedule.resolve_interval(
+            every, interval, context.config.get("defaults", {})
+        )
     except ValueError as exc:
         print_error(context.console, exc)
         raise typer.Exit(2) from exc
+
+    if install_timer:
+        try:
+            actions = schedule.install_timer(interval_seconds, limit=limit)
+        except (OSError, ValueError) as exc:
+            print_error(context.console, exc)
+            raise typer.Exit(2) from exc
+        for action in actions:
+            context.console.print(f"[green]{action}[/green]")
+        context.console.print(
+            tr("watch.timer_installed", every=schedule.format_duration(interval_seconds))
+        )
+        raise typer.Exit(0)
 
     def once() -> bool:
         report, result = watch_module.run_watch(
@@ -90,8 +119,11 @@ def watch(
         handler = getattr(signal, signal_name, None)
         if handler is not None:
             signal.signal(handler, _request_stop)
+    context.console.print(
+        f"[dim]{tr('watch.interval', every=schedule.format_duration(interval_seconds))}[/dim]"
+    )
     while not stop.is_set():
         once()
-        stop.wait(interval)
+        stop.wait(interval_seconds)
     context.console.print(f"[yellow]{tr('common.cancelled')}[/yellow]")
     raise typer.Exit(0)

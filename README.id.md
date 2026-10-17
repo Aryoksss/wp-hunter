@@ -139,6 +139,30 @@ wp-hunter watch --dry-run
 wp-hunter watch --vuln
 ```
 
+### Mengatur seberapa sering pengecekan
+
+`--every` menerima menit atau jam (`30m`, `2h`, `1h30m`); angka tanpa satuan
+berarti menit. Nilai ini dipakai oleh loop `--daemon` maupun timer systemd.
+`--interval` tetap tersedia dalam detik untuk kompatibilitas, dan `--every`
+menang atasnya.
+
+```bash
+# Daemon resident, cek ulang tiap 2 jam
+wp-hunter watch --daemon --every 2h --limit 10
+
+# Simpan sebagai default, sehingga `wp-hunter watch` biasa memakainya
+wp-hunter config set watch_every 45m
+
+# Tulis /etc/systemd/system/wp-hunter-watch.{service,timer} untuk interval ini,
+# lalu daemon-reload + enable + restart (butuh root)
+sudo wp-hunter watch --install-timer --every 2h --limit 10
+```
+
+`--install-timer` membuat `/etc/wp-hunter/watch.env` mode `600` bila belum ada,
+membackup unit lama ke `*.bak`, dan menjadwalkan dengan `OnBootSec` +
+`OnUnitActiveSec`, jadi interval apa pun bisa dipakai — bukan hanya pembagi 60
+menit.
+
 ### Alert kerentanan (opsional)
 
 Dengan `--vuln`, `watch` juga menanyakan database [WPScan](https://wpscan.com/)
@@ -216,7 +240,9 @@ dijalankan di terminal. Tambahkan `--vuln` dan `WPSCAN_API_TOKEN` ke service
 atau cron bila juga ingin alert kerentanan.
 
 **Opsi 3 — timer systemd.** Untuk satu pass terjadwal (tanpa proses yang terus
-hidup), pasangkan service oneshot dengan timer.
+hidup), pasangkan service oneshot dengan timer. Cara cepat: `sudo wp-hunter
+watch --install-timer --every 30m` menulis kedua file, reload systemd, dan
+mengaktifkan timer untuk Anda.
 
 `/etc/systemd/system/wp-hunter-watch.service`:
 

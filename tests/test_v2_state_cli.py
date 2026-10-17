@@ -136,6 +136,24 @@ class V2CliTests(unittest.TestCase):
         self.assertEqual(config["defaults"]["download_limit"], 500)
         self.assertEqual(invalid.exit_code, 2, invalid.output)
 
+    def test_config_can_persist_the_watch_interval(self):
+        with tempfile.TemporaryDirectory() as temp_name:
+            result = CliRunner().invoke(
+                app,
+                ["config", "set", "watch_every", "45m"],
+                env={"WP_HUNTER_CONFIG_DIR": temp_name},
+            )
+            invalid = CliRunner().invoke(
+                app,
+                ["config", "set", "watch_every", "soon"],
+                env={"WP_HUNTER_CONFIG_DIR": temp_name},
+            )
+            config = load_config(Path(temp_name) / "config.json")
+
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertEqual(config["defaults"]["watch_every"], "45m")
+        self.assertEqual(invalid.exit_code, 2, invalid.output)
+
     def test_replacing_user_preset_requires_confirmation(self):
         with tempfile.TemporaryDirectory() as temp_name:
             config_file = Path(temp_name) / "config.json"

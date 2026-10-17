@@ -7,9 +7,12 @@ from datetime import datetime, timezone
 
 from . import http
 from .notifiers import NotificationResult, TelegramNotifier
+from .safe_names import is_safe_slug
 from .versioning import version_is_newer
 from .vulndb import ScanOutcome, Vulnerability, WpscanClient, warn_unconfigured
 from .watch_state import WatchState
+
+PLUGIN_PAGE_URL = "https://wordpress.org/plugins/{slug}/"
 
 
 @dataclass
@@ -100,37 +103,69 @@ def _safe_text(value: str) -> str:
     return html.escape(html.unescape(value))
 
 
+def _plural(count: int, singular: str, plural: str | None = None) -> str:
+    word = singular if count == 1 else (plural or f"{singular}s")
+    return f"{count} {word}"
+
+
+def _plugin_link(name: str, slug: str) -> str:
+    """Link a plugin name to its WordPress.org page when the slug is safe."""
+    label = _safe_text(name or slug)
+    if not is_safe_slug(slug):
+        return label
+    return f'<a href="{PLUGIN_PAGE_URL.format(slug=slug)}">{label}</a>'
+
+
+def _short_date(value: str) -> str:
+    return value.split(" ", 1)[0] if value else ""
+
+
 def _headline(report: WatchReport, empty: bool) -> str:
     if empty:
         return ""
-    title = f"WP Hunter — {len(report.updated)} update(s), {len(report.vulnerable)} vulnerable"
-    lines = [f"<b>{html.escape(title)}</b>"]
+    summary = [_plural(len(report.updated), "update")]
     if report.vulnerable:
-        lines.append("\n<b>⚠ Known vulnerabilities</b>")
+        summary.append(f"{len(report.vulnerable)} vulnerable")
+    lines = [f"<b>WP Hunter — {' · '.join(summary)}</b>"]
+    if report.vulnerable:
+        lines.append("\n\n<b>⚠ Known vulnerabilities</b>")
         for item in report.vulnerable[:20]:
             affected = item.affected
-            name = _safe_text(item.name or item.slug)
-            lines.append(f"\n<b>{name}</b> (v{_safe_text(item.version)})")
+            lines.append(
+                f"\n\n▸ <b>{_plugin_link(item.name, item.slug)}</b>"
+                f" · <code>{_safe_text(item.slug)}</code>"
+                f" · v{_safe_text(item.version)}"
+            )
             for vuln in affected[:5]:
-                fixed = f" → fixed in {_safe_text(vuln.fixed_in)}" if vuln.fixed_in else ""
+                fixed = f" — fixed in {_safe_text(vuln.fixed_in)}" if vuln.fixed_in else ""
                 score = f" [CVSS {vuln.cvss_score:g}]" if vuln.cvss_score is not None else ""
-                lines.append(f"\n  • {_safe_text(vuln.title)}{fixed}{score}")
+                lines.append(f"\n   • {_safe_text(vuln.title)}{fixed}{score}")
             if len(affected) > 5:
-                lines.append(f"\n  …and {len(affected) - 5} more")
+                lines.append(f"\n   …and {len(affected) - 5} more")
         if len(report.vulnerable) > 20:
             lines.append(f"\n…and {len(report.vulnerable) - 20} more vulnerable plugins")
     if report.updated:
-        lines.append("\n<b>Version updates</b>")
+        lines.append("\n\n<b>Version updates</b>")
         for update in report.updated[:40]:
-            name = _safe_text(update.name or update.slug)
+            detail = [
+                f"{_safe_text(update.old_version)} → <b>{_safe_text(update.new_version)}</b>",
+                f"{update.active_installs:,} installs",
+            ]
+            updated_on = _short_date(update.last_updated)
+            if updated_on:
+                detail.append(f"updated {_safe_text(updated_on)}")
             lines.append(
-                f"\n<b>{name}</b>\n"
-                f"  {_safe_text(update.old_version)} → <b>{_safe_text(update.new_version)}</b>\n"
-                f"  {update.active_installs:,} installs"
+                f"\n\n▸ <b>{_plugin_link(update.name, update.slug)}</b>"
+                f" · <code>{_safe_text(update.slug)}</code>"
+                f"\n   {' · '.join(detail)}"
             )
         if len(report.updated) > 40:
             lines.append(f"\n…and {len(report.updated) - 40} more.")
-    lines.append(f"\n<i>Checked {report.checked} plugins at {_timestamp()}</i>")
+    lines.append(f"\n\n<i>Checked {report.checked} plugins · {_timestamp()}</i>")
+    if not report.complete:
+        lines.append(
+            f"\n<i>⚠ Partial scan: {_plural(report.failed_pages, 'listing page')} failed</i>"
+        )
     return "".join(lines)
 
 

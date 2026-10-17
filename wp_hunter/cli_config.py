@@ -7,6 +7,7 @@ import typer
 from .cli_context import state
 from .config import default_config, save_config
 from .i18n import set_language, tr
+from .schedule import format_duration, parse_duration
 
 
 def register(app: typer.Typer) -> None:
@@ -31,6 +32,12 @@ def config_set(ctx: typer.Context, key: str, value: str) -> None:
         set_language(value)
     elif key == "output_parent":
         context.config.setdefault("defaults", {})[key] = value
+    elif key == "watch_every":
+        try:
+            seconds = parse_duration(value)
+        except ValueError as exc:
+            raise typer.BadParameter(str(exc)) from exc
+        context.config.setdefault("defaults", {})[key] = format_duration(seconds)
     elif key in {
         "download_workers",
         "api_workers",

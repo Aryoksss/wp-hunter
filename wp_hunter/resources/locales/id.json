@@ -24,6 +24,8 @@
   "watch.notified": "Mengirim {count} pesan Telegram.",
   "watch.vulnerable": "{count} plugin memiliki kerentanan yang diketahui.",
   "watch.partial": "Pemindaian tidak lengkap: {failed} halaman daftar gagal, jadi hanya {checked} plugin yang diperiksa dan tidak ada versi tercatat yang dipangkas.",
+  "watch.interval": "Memeriksa tiap {every}.",
+  "watch.timer_installed": "Timer systemd terpasang dan aktif (tiap {every}).",
   "status.no_roots": "Belum ada folder output WP Hunter yang tersimpan.",
   "status.title": "Status WP Hunter",
   "status.columns": "Root|Diunduh|Tersedia|Dihapus|Ditinjau|Kandidat|Kesalahan|Scan terakhir",
