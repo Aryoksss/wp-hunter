@@ -5,6 +5,7 @@ from rich.console import Console
 
 from . import (
     __version__,
+    cli_bot,
     cli_commands,
     cli_config,
     cli_context,
@@ -25,6 +26,7 @@ app = typer.Typer(
     rich_markup_mode="rich",
 )
 cli_watch.register(app)
+cli_bot.register(app)
 cli_commands.register(app)
 cli_download.register(app)
 cli_config.register(app)

@@ -107,6 +107,7 @@ Nama command dan flag tetap menggunakan English pada kedua bahasa.
 | `wp-hunter scan DIR` | Triage Semgrep report-only atau cleanup terkonfirmasi |
 | `wp-hunter status [DIR]` | Ringkasan download, review, penghapusan, dan hasil scan |
 | `wp-hunter watch` | Memantau update versi plugin populer dan notifikasi ke Telegram |
+| `wp-hunter bot` | Menjawab perintah Telegram (`/time`, `/status`, `/run`) dari chat Anda |
 | `wp-hunter doctor` | Memeriksa Python, requests, Semgrep, rule, dan disk |
 | `wp-hunter preset ...` | Melihat, menjalankan, atau menghapus preset workflow |
 | `wp-hunter config ...` | Melihat dan mengubah preferensi pengguna |
@@ -162,6 +163,30 @@ sudo wp-hunter watch --install-timer --every 2h --limit 10
 membackup unit lama ke `*.bak`, dan menjadwalkan dengan `OnBootSec` +
 `OnUnitActiveSec`, jadi interval apa pun bisa dipakai — bukan hanya pembagi 60
 menit.
+
+### Mengubah jadwal dari Telegram
+
+`wp-hunter bot` melakukan long-poll pada bot yang sama dan hanya menjawab pesan
+dari `TELEGRAM_CHAT_ID` Anda; pesan dari chat lain diabaikan. Bot ini tidak
+pernah memindai folder output — `/run` hanya menyegarkan pemantauan update.
+
+```bash
+# Pasang dan jalankan service bot (root; membaca /etc/wp-hunter/watch.env)
+sudo wp-hunter bot --install-service
+
+# Atau jalankan di foreground / proses perintah yang mengantre sekali saja
+wp-hunter bot
+wp-hunter bot --once
+```
+
+Perintah: `/time` menampilkan interval, `/time 2h` mengubahnya (dan mengaktifkan
+ulang timer bila bot berjalan sebagai root), `/status` melaporkan plugin
+terlacak, interval, dan jadwal berikutnya, `/run` memeriksa sekarang dan
+mengirim digest.
+
+Hanya satu proses yang boleh melakukan polling pada satu token bot. Bila webhook
+aktif untuk bot tersebut, `getUpdates` gagal dengan 409 — hapus dulu lewat
+`https://api.telegram.org/bot<TOKEN>/deleteWebhook`.
 
 ### Alert kerentanan (opsional)
 

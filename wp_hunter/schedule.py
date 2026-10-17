@@ -21,11 +21,13 @@ DEFAULT_INTERVAL = "1h"
 
 SERVICE_UNIT = "wp-hunter-watch.service"
 TIMER_UNIT = "wp-hunter-watch.timer"
+BOT_SERVICE_UNIT = "wp-hunter-bot.service"
 UNIT_DIR = Path("/etc/systemd/system")
 ENV_FILE = Path("/etc/wp-hunter/watch.env")
 
 _UNIT_SECONDS = {"d": 86400, "h": 3600, "m": 60, "s": 1}
 _DURATION_TOKEN = re.compile(r"(\d+)\s*([dhms])", re.IGNORECASE)
+_SERVICE_LIMIT = re.compile(r"watch\s+--limit\s+(\d+)")
 
 _ENV_TEMPLATE = (
     "# WP Hunter watcher credentials. Keep this file at mode 600.\n"
@@ -130,6 +132,41 @@ def render_timer(seconds: int) -> str:
     )
 
 
+def render_bot_service(
+    exec_path: str | None = None,
+    env_file: Path = ENV_FILE,
+) -> str:
+    binary = exec_path or shutil.which("wp-hunter") or "wp-hunter"
+    return (
+        "[Unit]\n"
+        "Description=WP Hunter Telegram command bot\n"
+        "Documentation=https://github.com/Aryoksss/wp-hunter\n"
+        "After=network-online.target\n"
+        "Wants=network-online.target\n"
+        "\n"
+        "[Service]\n"
+        "Type=simple\n"
+        f"EnvironmentFile={env_file}\n"
+        f"ExecStart={binary} bot\n"
+        "Restart=always\n"
+        "RestartSec=10\n"
+        "TimeoutStopSec=45\n"
+        "\n"
+        "[Install]\n"
+        "WantedBy=multi-user.target\n"
+    )
+
+
+def read_service_limit(unit_dir: Path = UNIT_DIR) -> int | None:
+    """Read the --limit used by the installed watcher service, if any."""
+    try:
+        text = (unit_dir / SERVICE_UNIT).read_text(encoding="utf-8")
+    except OSError:
+        return None
+    match = _SERVICE_LIMIT.search(text)
+    return int(match.group(1)) if match else None
+
+
 def ensure_env_file(path: Path = ENV_FILE) -> bool:
     """Create the credentials file at mode 600 when it is missing."""
     if path.is_symlink():
@@ -145,51 +182,93 @@ def ensure_env_file(path: Path = ENV_FILE) -> bool:
     return True
 
 
-def install_timer(
-    seconds: int,
-    limit: int = 10,
-    unit_dir: Path = UNIT_DIR,
-    env_file: Path = ENV_FILE,
-    run=subprocess.run,
-) -> list[str]:
-    """Write the systemd units for this interval and (re)arm the timer."""
+def _require_root() -> None:
     if os.geteuid() != 0:
-        raise ValueError("installing the systemd timer requires root; re-run with sudo")
-    service_path = unit_dir / SERVICE_UNIT
-    timer_path = unit_dir / TIMER_UNIT
-    for path in (service_path, timer_path):
-        if path.is_symlink():
-            raise ValueError(f"refusing symlinked unit path: {path}")
+        raise ValueError("writing systemd units requires root; re-run with sudo")
 
-    actions: list[str] = []
-    if ensure_env_file(env_file):
-        actions.append(f"created {env_file} (mode 600)")
 
-    for path, text in (
-        (service_path, render_service(limit, env_file=env_file)),
-        (timer_path, render_timer(seconds)),
-    ):
-        if path.exists():
-            if not path.is_file():
-                raise ValueError(f"unit path is not a file: {path}")
-            current = path.read_text(encoding="utf-8")
-            if current == text:
-                continue
-            backup = path.with_name(path.name + ".bak")
-            atomic_write_text(backup, current)
-            actions.append(f"backed up {path} → {backup.name}")
-        atomic_write_text(path, text)
-        os.chmod(path, 0o644)
-        actions.append(f"wrote {path}")
+def _write_unit(path: Path, text: str, actions: list[str]) -> None:
+    if path.is_symlink():
+        raise ValueError(f"refusing symlinked unit path: {path}")
+    if path.exists():
+        if not path.is_file():
+            raise ValueError(f"unit path is not a file: {path}")
+        current = path.read_text(encoding="utf-8")
+        if current == text:
+            return
+        backup = path.with_name(path.name + ".bak")
+        atomic_write_text(backup, current)
+        actions.append(f"backed up {path} → {backup.name}")
+    atomic_write_text(path, text)
+    os.chmod(path, 0o644)
+    actions.append(f"wrote {path}")
 
-    for command in (
-        ["systemctl", "daemon-reload"],
-        ["systemctl", "enable", TIMER_UNIT],
-        ["systemctl", "restart", TIMER_UNIT],
-    ):
+
+def _systemctl(commands: list[list[str]], actions: list[str], run=subprocess.run) -> None:
+    for command in commands:
         result = run(command, check=False, capture_output=True, text=True)
         if getattr(result, "returncode", 0) != 0:
             detail = (getattr(result, "stderr", "") or "").strip()[:200]
             raise ValueError(f"{' '.join(command)} failed: {detail}")
         actions.append(f"ran {' '.join(command)}")
+
+
+def install_timer(
+    seconds: int,
+    limit: int | None = None,
+    unit_dir: Path = UNIT_DIR,
+    env_file: Path = ENV_FILE,
+    run=subprocess.run,
+) -> list[str]:
+    """Write the systemd units for this interval and (re)arm the timer.
+
+    ``limit=None`` keeps an existing service unit untouched, so changing the
+    cadence never rewrites the operator's ``--limit``.
+    """
+    _require_root()
+    service_path = unit_dir / SERVICE_UNIT
+    timer_path = unit_dir / TIMER_UNIT
+
+    actions: list[str] = []
+    if ensure_env_file(env_file):
+        actions.append(f"created {env_file} (mode 600)")
+
+    if limit is not None or not service_path.exists():
+        _write_unit(
+            service_path,
+            render_service(limit if limit is not None else 10, env_file=env_file),
+            actions,
+        )
+    _write_unit(timer_path, render_timer(seconds), actions)
+    _systemctl(
+        [
+            ["systemctl", "daemon-reload"],
+            ["systemctl", "enable", TIMER_UNIT],
+            ["systemctl", "restart", TIMER_UNIT],
+        ],
+        actions,
+        run=run,
+    )
+    return actions
+
+
+def install_bot_service(
+    unit_dir: Path = UNIT_DIR,
+    env_file: Path = ENV_FILE,
+    run=subprocess.run,
+) -> list[str]:
+    """Write and start the Telegram command bot service."""
+    _require_root()
+    actions: list[str] = []
+    if ensure_env_file(env_file):
+        actions.append(f"created {env_file} (mode 600)")
+    _write_unit(unit_dir / BOT_SERVICE_UNIT, render_bot_service(env_file=env_file), actions)
+    _systemctl(
+        [
+            ["systemctl", "daemon-reload"],
+            ["systemctl", "enable", "--now", BOT_SERVICE_UNIT],
+        ],
+        actions,
+        run=run,
+    )
     return actions

@@ -108,6 +108,7 @@ Command and option names remain English in both languages.
 | `wp-hunter scan DIR` | Run report-only or explicitly confirmed Semgrep triage |
 | `wp-hunter status [DIR]` | Summarize downloads, removed releases, reviews, and scan results |
 | `wp-hunter watch` | Watch popular plugins for version updates and notify Telegram |
+| `wp-hunter bot` | Answer Telegram commands (`/time`, `/status`, `/run`) from your chat |
 | `wp-hunter doctor` | Check Python, requests, Semgrep, rules, and disk space |
 | `wp-hunter preset ...` | List, inspect, run, or delete workflow presets |
 | `wp-hunter config ...` | Show, update, or reset user preferences |
@@ -161,6 +162,29 @@ sudo wp-hunter watch --install-timer --every 2h --limit 10
 missing, backs up existing units to `*.bak`, and schedules with
 `OnBootSec` + `OnUnitActiveSec`, so any interval works — not only divisors of an
 hour.
+
+### Change the cadence from Telegram
+
+`wp-hunter bot` long-polls the same bot and answers **only** messages from your
+`TELEGRAM_CHAT_ID`; anything from another chat is ignored. It never scans an
+output root — `/run` only refreshes the update watch.
+
+```bash
+# Install and start the bot service (root; reads /etc/wp-hunter/watch.env)
+sudo wp-hunter bot --install-service
+
+# Or run it in the foreground / process queued commands once
+wp-hunter bot
+wp-hunter bot --once
+```
+
+Commands: `/time` shows the interval, `/time 2h` changes it (and re-arms the
+timer when the bot runs as root), `/status` reports tracked plugins, the
+interval and the next run, `/run` checks now and sends the digest.
+
+Only one process may poll a bot token at a time. If a webhook is configured for
+the bot, `getUpdates` fails with a 409 — delete it first with
+`https://api.telegram.org/bot<TOKEN>/deleteWebhook`.
 
 ### Vulnerability alerts (optional)
 
